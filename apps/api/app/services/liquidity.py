@@ -28,11 +28,14 @@ class RateProjection:
     burn_rate_per_min: float
     variance: float
     reasons: List[str]
+    summary: str                # curated one-line basis for the UI basis line
     window_minutes: int
 
 
 def _select_window_minutes(provider: str) -> int:
-    # 60-minute rolling window for burn rate is a good prototype default
+    # 60-minute rolling window for burn rate is a good prototype default.
+    # We also try a "since-first-sample" fallback for cold start — handled
+    # inside rate_projection.
     return 60
 
 
@@ -52,23 +55,29 @@ def rate_projection(
         .order_by(BalanceHistory.ts)
     ).all()
 
-    physical = [
-        h for h in session.exec(
+    # Cold-start fallback: if the rolling window is empty but we *do* have
+    # samples since the agent first started, use that window instead of
+    # returning nothing. This avoids the "confidence 30% not enough history"
+    # state on a freshly-ticked provider that just hasn't accumulated 60 min yet.
+    if len(history) < 3:
+        all_history = session.exec(
             select(BalanceHistory)
             .where(BalanceHistory.agent_id == agent_id)
-            .where(BalanceHistory.provider == "physical")
-            .where(BalanceHistory.ts >= window_start)
+            .where(BalanceHistory.provider == provider)
             .order_by(BalanceHistory.ts)
         ).all()
-    ]
+        if len(all_history) >= 3:
+            history = all_history
+            window = max(1, int((history[-1].ts - history[0].ts).total_seconds() / 60))
 
     if len(history) < 3:
         return RateProjection(
             hours_to_shortage=None,
-            confidence=0.30,
+            confidence=0.45,
             burn_rate_per_min=0.0,
             variance=0.0,
-            reasons=["not enough history yet — need a few minutes of burn-rate samples"],
+            reasons=["warming up — first few samples arriving, projection in ~1 min"],
+            summary="warming up",
             window_minutes=window,
         )
 
@@ -95,12 +104,17 @@ def rate_projection(
             per_min_rates.append(0.0)
 
     if not per_min_rates or sum(per_min_rates) <= 0:
+        # "No outflow" is a *good* state, not a low-confidence one. We are
+        # confident the wallet is not draining — say so, and surface a high
+        # confidence in "stable". A future negative delta will lower this.
+        last_balance = points[-1][1]
         return RateProjection(
             hours_to_shortage=None,
-            confidence=0.40,
+            confidence=0.85,
             burn_rate_per_min=0.0,
             variance=0.0,
-            reasons=["no outflow detected in window — provider wallet is stable or being rebalanced"],
+            reasons=["no outflow detected in window — wallet is stable or being rebalanced"],
+            summary="stable — no draining",
             window_minutes=window,
         )
 
@@ -120,23 +134,27 @@ def rate_projection(
     avg_rate = sum(capped_rates) / len(capped_rates)
     variance = pstdev(capped_rates) if len(capped_rates) > 1 else 0.0
     cv = (variance / avg_rate) if avg_rate > 0 else 1.0
-    # tighter variance ⇒ higher confidence
-    confidence = max(0.30, min(0.95, 0.95 - min(0.65, cv)))
+    # tighter variance ⇒ higher confidence.
+    # Floor raised to 0.55: a real burn signal that ran for ≥3 minutes
+    # is meaningful, even if noisy. Ceiling kept at 0.95.
+    confidence = max(0.55, min(0.95, 0.95 - min(0.40, cv)))
 
     last_balance = points[-1][1]
     if last_balance <= 0:
         return RateProjection(
             hours_to_shortage=0.0,
-            confidence=min(0.99, confidence + 0.05),
+            confidence=min(0.97, confidence + 0.02),
             burn_rate_per_min=avg_rate,
             variance=variance,
             reasons=["balance already at or below zero — operational triage required"],
+            summary="balance depleted — triage required",
             window_minutes=window,
         )
 
     minutes_left = last_balance / max(avg_rate, 1e-6)
     hours_left = minutes_left / 60.0
 
+    # ---- Reasons (technical) ----
     reasons: List[str] = []
     n_capped = sum(1 for r in per_min_rates if r > cap)
     if n_capped > 0:
@@ -145,12 +163,18 @@ def rate_projection(
         )
     if avg_rate > 0:
         reasons.append(f"average burn rate {avg_rate:.0f} BDT/min over the last {window} min")
-    if variance > 0:
-        reasons.append(f"burn-rate stdev {variance:.0f} BDT/min (cv {cv:.2f})")
     if last_balance < 15_000:
         reasons.append(f"low remaining balance {last_balance:,.0f} BDT")
-    if avg_rate == 0:
-        reasons.append("no recent outflow — projection paused")
+
+    # ---- Summary (curated one-liner for the UI basis line) ----
+    if hours_left < 1:
+        summary = f"draining fast — about {int(round(hours_left * 60))} min of buffer left"
+    elif hours_left < 6:
+        summary = f"elevated burn — ~{fmt_duration_hours(hours_left)} until depletion"
+    elif hours_left < 24:
+        summary = f"steady burn — comfortable for {fmt_duration_hours(hours_left)}"
+    else:
+        summary = f"low burn — no shortage expected in the next {fmt_duration_hours(hours_left)}"
 
     return RateProjection(
         hours_to_shortage=hours_left if minutes_left > 0 else None,
@@ -158,8 +182,23 @@ def rate_projection(
         burn_rate_per_min=avg_rate,
         variance=variance,
         reasons=reasons or [f"balance {last_balance:,.0f} BDT, burn {avg_rate:.0f} BDT/min"],
+        summary=summary,
         window_minutes=window,
     )
+
+
+def fmt_duration_hours(hours: float) -> str:
+    """Render hours as a short human-friendly string for summary messages."""
+    total_min = int(round(hours * 60))
+    if total_min < 60:
+        return f"{total_min} min"
+    h = total_min // 60
+    m = total_min % 60
+    if h < 24:
+        return f"{h}h" if m == 0 else f"{h}h {m}m"
+    d = h // 24
+    rh = h % 24
+    return f"{d}d" if rh == 0 else f"{d}d {rh}h"
 
 
 # ---------------------------------------------------------------------------

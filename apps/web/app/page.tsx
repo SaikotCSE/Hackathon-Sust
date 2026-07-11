@@ -4,7 +4,7 @@ import Link from "next/link";
 export default function Home() {
   return (
     <div style={{ padding: 24 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700 }}>Super Agent Liquidity & Risk Intelligence Platform</h1>
+      <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.3 }}>Super Agent Liquidity & Risk Intelligence Platform</h1>
       <p style={{ color: "#475569" }}>
         Decision-support prototype. Human-in-the-loop only — never executes transactions,
         never claims fraud.

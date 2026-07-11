@@ -50,7 +50,7 @@ export function Card({ children, style }: { children: React.ReactNode; style?: R
       background: "#fff",
       border: "1px solid #e5e7eb",
       borderRadius: 12,
-      padding: 16,
+      padding: 18,
       boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
       ...style,
     }}>{children}</div>
@@ -59,10 +59,10 @@ export function Card({ children, style }: { children: React.ReactNode; style?: R
 
 export function PageHeader({ title, subtitle, right }: { title: string; subtitle?: string; right?: React.ReactNode }) {
   return (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 16 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 20 }}>
       <div>
-        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: "#0f172a" }}>{title}</h1>
-        {subtitle && <div style={{ color: "#64748b", marginTop: 4, fontSize: 14 }}>{subtitle}</div>}
+        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: "#0f172a", letterSpacing: -0.3 }}>{title}</h1>
+        {subtitle && <div style={{ color: "#64748b", marginTop: 6, fontSize: 14 }}>{subtitle}</div>}
       </div>
       <div>{right}</div>
     </div>
@@ -73,7 +73,7 @@ export function Disclaimer() {
   return (
     <div style={{
       background: "#fef9c3", border: "1px solid #fde047", color: "#713f12",
-      borderRadius: 8, padding: "8px 12px", fontSize: 12, marginBottom: 12,
+      borderRadius: 8, padding: "10px 14px", fontSize: 14, marginBottom: 14,
     }}>
       ⚠ Advisory only. We never execute transactions and never claim fraud. Decisions stay with you.
     </div>

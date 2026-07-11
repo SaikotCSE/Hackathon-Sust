@@ -38,16 +38,22 @@ export function TopBar({
 
   return (
     <header style={{
-      background: "#0f172a", color: "#f8fafc", padding: "10px 24px",
+      background: "#0f172a", color: "#f8fafc",
+      // Edge-to-edge bar: spans full viewport width. The interior padding
+      // matches the <main> gutter so the logo and nav stay visually
+      // aligned with the content below.
+      width: "100%",
+      padding: "14px 32px",
+      boxSizing: "border-box",
       display: "flex", alignItems: "center", gap: 24, flexWrap: "wrap",
     }}>
-      <div style={{ fontWeight: 700, fontSize: 16 }}>Super Agent · Liquidity & Risk</div>
-      <nav style={{ display: "flex", gap: 4, marginLeft: 8 }}>
+      <div style={{ fontWeight: 700, fontSize: 18 }}>Super Agent · Liquidity & Risk</div>
+      <nav style={{ display: "flex", gap: 4, marginLeft: 12 }}>
         {NAV.filter(n => n.show(role)).map(n => {
           const active = path?.startsWith(n.href);
           return (
             <Link key={n.href} href={n.href} style={{
-              padding: "6px 12px", borderRadius: 6, fontSize: 13,
+              padding: "8px 14px", borderRadius: 6, fontSize: 15,
               background: active ? "#1e293b" : "transparent",
               color: active ? "#fff" : "#cbd5e1",
               textDecoration: "none",
@@ -55,13 +61,13 @@ export function TopBar({
           );
         })}
       </nav>
-      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 1 }}>
+      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontSize: 13, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 1 }}>
           Role
         </span>
         <span style={{
-          background: badge.bg, color: badge.fg, fontSize: 11, fontWeight: 700,
-          padding: "3px 8px", borderRadius: 999, textTransform: "uppercase",
+          background: badge.bg, color: badge.fg, fontSize: 13, fontWeight: 700,
+          padding: "4px 10px", borderRadius: 999, textTransform: "uppercase",
         }}>{role}</span>
         <select
           aria-label="Acting as principal"
@@ -78,7 +84,7 @@ export function TopBar({
           }}
           style={{
             background: "#1e293b", color: "#f8fafc", border: "1px solid #334155",
-            borderRadius: 6, padding: "4px 8px", fontSize: 12, minWidth: 220,
+            borderRadius: 6, padding: "6px 10px", fontSize: 14, minWidth: 240,
           }}
         >
           {(data?.users ?? []).map(u => (

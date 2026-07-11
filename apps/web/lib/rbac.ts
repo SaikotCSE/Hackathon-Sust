@@ -75,6 +75,32 @@ export function canPerformAction(role: Role | string | undefined, action: string
   return ACTION_ALLOWED[action]?.includes(role as Role) ?? false;
 }
 
+// Per-recommended-action RBAC for the Decision Intelligence panel.
+// These map to the action keys in config/decision-weights.json and the
+// orchestration output (Module 4). The UI filters and button-enables
+// against this map so an agent, for example, never sees an "Assign Field
+// Officer" button (they have no dispatch capability) and a provider only
+// sees "Follow up with provider feed" (it's their feed that's degraded).
+//
+// Server-side enforcement is authoritative — see the matching block in
+// apps/api/app/routers/alerts.py:execute_recommended_action.
+const RECOMMENDED_ACTION_ALLOWED: Record<string, Role[]> = {
+  notify_ops:            ["agent", "ops", "risk"],
+  assign_field_officer:  ["ops", "risk"],           // dispatch is ops/risk only
+  request_cash_support:  ["ops", "risk"],           // opens a provider ticket — ops/risk
+  monitor:               ["agent", "ops", "risk", "provider", "management"],
+  risk_review:           ["agent", "ops", "risk"],  // anyone with can_act_on_alerts can escalate
+  data_quality_followup: ["provider", "ops", "risk"], // feed owner + ops/risk
+};
+
+export function canPerformRecommendedAction(
+  role: Role | string | undefined,
+  actionKey: string,
+): boolean {
+  if (!role) return false;
+  return RECOMMENDED_ACTION_ALLOWED[actionKey]?.includes(role as Role) ?? false;
+}
+
 // Dashboard view key — which role-shaped component to render.
 export function dashboardViewFor(role: Role | string | undefined): string {
   switch (role) {

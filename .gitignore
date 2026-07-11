@@ -15,7 +15,8 @@ out/
 .tsbuildinfo
 tsconfig.tsbuildinfo
 
-# API runtime data (SQLite DB, scenario state)
+# Runtime data (SQLite DB, scenario state)
+.data/
 apps/api/.data/
 
 # Editor / tooling

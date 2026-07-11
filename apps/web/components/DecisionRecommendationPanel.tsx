@@ -160,7 +160,7 @@ function deriveOwner(rec: ReturnType<typeof pickTopRecommendation>): { role: str
     return { role: rec.ownerRole ?? "ops", label: rec.ownerLabel ?? "Provider Operations" };
   }
   if (rec.kind === "liquidity") {
-    if (rec.severity === "critical") return { role: "ops", label: "Provider Operations (area-manager tier)" };
+    if (rec.severity === "critical") return { role: "ops", label: "Provider Operations / Network Coordination" };
     return { role: "ops", label: "Provider Operations" };
   }
   return { role: "—", label: "—" };

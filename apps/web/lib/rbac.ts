@@ -124,7 +124,6 @@ export const ROLE_LABELS: Record<string, string> = {
 // Map seed usernames to a friendly "tier" label for the dashboard header.
 export const USERNAME_TIER: Record<string, string> = {
   field:   "Field Officer",
-  manager: "Area Manager",
   ops:     "Provider Operations",
 };
 

@@ -23,9 +23,13 @@ export function SeverityPill({ severity }: { severity: Severity }) {
 const STATUS: Record<string, { bg: string; fg: string }> = {
   open:        { bg: "#e0e7ff", fg: "#3730a3" },
   assigned:    { bg: "#cffafe", fg: "#155e75" },
-  reviewing:   { bg: "#fef3c7", fg: "#92400e" },
+  acknowledged:{ bg: "#cffafe", fg: "#155e75" },
+  under_review:{ bg: "#fef3c7", fg: "#92400e" },
+  escalated:   { bg: "#ede9fe", fg: "#6d28d9" },
+  compliance_decision: { bg: "#e0f2fe", fg: "#075985" },
+  risk_review: { bg: "#ede9fe", fg: "#5b21b6" },
   resolved:    { bg: "#dcfce7", fg: "#166534" },
-  auto_closed: { bg: "#e5e7eb", fg: "#374151" },
+  closed:      { bg: "#e5e7eb", fg: "#374151" },
 };
 
 export function StatusPill({ status }: { status: string }) {
@@ -40,13 +44,13 @@ export function StatusPill({ status }: { status: string }) {
 export function Confidence({ value, label }: { value: number; label?: string }) {
   const pct = Math.round(value * 100);
   // Approximate uncertainty band — confidence is the model's self-reported
-  // certainty, *not* a fraud verdict. Show ±N% alongside so the reader can
+  // certainty, not a determination. Show ±N% alongside so the reader can
   // see the uncertainty explicitly. The tooltip repeats this so any analyst
   // who hovers the pill gets the framing.
   const uncertainty = pct >= 80 ? 5 : pct >= 55 ? 10 : 20;
   const color = pct >= 80 ? "#16a34a" : pct >= 55 ? "#ca8a04" : "#dc2626";
   const tooltip = (label || "Confidence") +
-    " — the model's self-reported certainty, not proof of fraud. " +
+    " — model certainty for triage only, not proof of wrongdoing. " +
     `False positives are expected (roughly ±${uncertainty}%).`;
   return (
     <span title={tooltip} style={{ fontSize: 12, color }}>
@@ -86,7 +90,7 @@ export function Disclaimer() {
       background: "#fef9c3", border: "1px solid #fde047", color: "#713f12",
       borderRadius: 8, padding: "10px 14px", fontSize: 14, marginBottom: 14,
     }}>
-      ⚠ Advisory only. We never execute transactions and never claim fraud. Decisions stay with you.
+      ⚠ Advisory only. Unusual signals require human review. No transactions or account actions are executed.
     </div>
   );
 }

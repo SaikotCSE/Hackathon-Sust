@@ -7,7 +7,7 @@ export default function Home() {
       <h1 style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.3 }}>Super Agent Liquidity & Risk Intelligence Platform</h1>
       <p style={{ color: "#475569" }}>
         Decision-support prototype. Human-in-the-loop only — never executes transactions,
-        never claims fraud.
+        labels activity as unusual and requires human review.
       </p>
       <ul>
         <li><Link href="/dashboard">Dashboard</Link> — provider balances, forecasts, top recommendation</li>

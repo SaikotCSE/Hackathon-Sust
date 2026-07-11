@@ -3,14 +3,9 @@
 
 export type Role = "agent" | "ops" | "risk" | "provider" | "management";
 
-// The capability name intentionally avoids the word "fraud" — it gates whether
-// the role may issue the final compliance decision (i.e. close the case after
-// review). The system does not declare fraud anywhere in the source; the
-// capability simply enforces who has authority to mark a case closed.
 export type Capability =
   | "can_see_own_agent_only"
   | "can_act_on_alerts"
-  | "can_close_compliance_case"
   | "can_dispatch"
   | "can_see_all_providers"
   | "can_inject_scenario"
@@ -36,14 +31,13 @@ const ROLE_PERMS: Record<Role, Capability[]> = {
     "can_view_cases",
   ],
   risk: [
-    "can_act_on_alerts",
-    "can_close_compliance_case",
     "can_see_all_providers",
     "can_view_metrics",
     "can_view_cases",
   ],
   provider: [
-    "can_see_all_providers",
+    "can_act_on_alerts",
+    "can_view_cases",
     "can_view_metrics",
   ],
   management: [
@@ -62,12 +56,12 @@ export function can(role: Role | string | undefined, capability: Capability): bo
 // Per-action RBAC for the alert state machine — matches the server-side
 // checks in apps/api/app/routers/alerts.py:transition_case.
 const ACTION_ALLOWED: Record<string, Role[]> = {
-  ack:      ["agent", "ops", "risk"],
-  review:   ["agent", "ops", "risk"],
-  resolve:  ["agent", "ops", "risk"],
-  escalate: ["agent", "ops", "risk"],
-  decision: ["risk"],
-  close:    ["risk"],
+  ack:      ["agent", "ops", "provider"],
+  review:   ["ops", "provider"],
+  start:    ["ops", "provider"],
+  resolve:  ["ops", "provider"],
+  escalate: ["ops"],
+  close:    ["ops", "provider"],
 };
 
 export function canPerformAction(role: Role | string | undefined, action: string): boolean {
@@ -85,12 +79,12 @@ export function canPerformAction(role: Role | string | undefined, action: string
 // Server-side enforcement is authoritative — see the matching block in
 // apps/api/app/routers/alerts.py:execute_recommended_action.
 const RECOMMENDED_ACTION_ALLOWED: Record<string, Role[]> = {
-  notify_ops:            ["agent", "ops", "risk"],
-  assign_field_officer:  ["ops", "risk"],           // dispatch is ops/risk only
-  request_cash_support:  ["ops", "risk"],           // opens a provider ticket — ops/risk
-  monitor:               ["agent", "ops", "risk", "provider", "management"],
-  risk_review:           ["agent", "ops", "risk"],  // anyone with can_act_on_alerts can escalate
-  data_quality_followup: ["provider", "ops", "risk"], // feed owner + ops/risk
+  notify_ops:            ["agent", "ops"],
+  assign_field_officer:  ["ops"],
+  request_cash_support:  ["agent", "ops"],
+  monitor:               ["agent", "ops", "risk", "provider"],
+  risk_review:           ["ops"],
+  data_quality_followup: ["provider", "ops"],
 };
 
 export function canPerformRecommendedAction(

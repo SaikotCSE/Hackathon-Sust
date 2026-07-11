@@ -11,10 +11,8 @@ import React from "react";
  *   • Two pills: time-to-shortage, burn rate (the numbers behind the answer)
  *   • Tiny basis note: one line, why we believe it
  *
- * Confidence is intentionally NOT shown. It's the model's own belief about
- * itself, not a fact about the world, and dressing it up as a verdict made
- * the card look worse. The backend can surface it once the logic is fixed;
- * the UI stays out of the way until then.
+ * Confidence is shown beside every estimate so uncertain data cannot look
+ * equivalent to a well-supported trend.
  *
  * No fetching. Pure presentational.
  */
@@ -22,11 +20,15 @@ export interface ForecastTimelineProps {
   providerKey: string;        // "physical" | "bkash" | "nagad" | "rocket"
   burnRatePerMin: number;
   hoursToShortage: number | null;
+  confidence: number;
   forecastSummary?: string;   // curated one-line basis from the backend (preferred)
   forecastReasons?: string[]; // technical/audit trail; fallback when summary is absent
   history?: number[];
   degraded?: boolean;
   degradedReason?: string | null;
+  forecastState?: string;
+  forecastAgeMinutes?: number | null;
+  projectedBalance8h?: number | null;
 }
 
 const PHASE = {
@@ -74,15 +76,18 @@ export function ForecastTimeline({
   providerKey,
   burnRatePerMin,
   hoursToShortage,
+  confidence,
   forecastSummary,
   forecastReasons = [],
   history = [],
   degraded = false,
   degradedReason = null,
+  forecastState,
+  forecastAgeMinutes,
+  projectedBalance8h,
 }: ForecastTimelineProps) {
   const phase: keyof typeof PHASE = degraded ? "watch" : phaseForHours(hoursToShortage);
   const phaseInfo = PHASE[phase];
-  const t = urgencyT(hoursToShortage);
 
   // Prefer the curated summary (single human-readable basis line). Fall back
   // to the first technical reason; finally to a generic phrasing.
@@ -93,87 +98,27 @@ export function ForecastTimeline({
       ? `cash drawer drawdown over ~${Math.max(1, Math.round((history?.length ?? 0) / 2))}h`
       : `last ${Math.max(1, history?.length ?? 0)} intervals' avg outflow`);
 
-  return (
-    <div>
-      {/* Answer */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "baseline",
-          justifyContent: "space-between",
-          gap: 8,
-          marginBottom: 8,
-        }}
-      >
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <span
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 999,
-              background: phaseInfo.fg,
-              display: "inline-block",
-            }}
-          />
-          <span style={{ fontSize: 13, fontWeight: 700, color: phaseInfo.fg, textTransform: "uppercase", letterSpacing: 0.5 }}>
-            {degraded ? "Paused" : phaseForHours(hoursToShortage)}
-          </span>
-        </span>
-        <span style={{ fontSize: 15, color: "#0f172a", fontVariantNumeric: "tabular-nums" }}>
-          {degraded ? (
-            <span style={{ color: "#92400e" }}>{degradedReason ?? "feed degraded"}</span>
-          ) : (
-            <>
-              shortage in <b style={{ color: phaseInfo.fg }}>{fmtDuration(hoursToShortage)}</b>
-            </>
-          )}
-        </span>
-      </div>
-
-      {/* Strip */}
-      <div
-        style={{
-          position: "relative",
-          height: 8,
-          borderRadius: 999,
-          overflow: "hidden",
-          display: "flex",
-          border: "1px solid #e2e8f0",
-        }}
-      >
-        <div style={{ flex: 5, background: PHASE.safe.bg }} />
-        <div style={{ flex: 2, background: PHASE.watch.bg }} />
-        <div style={{ flex: 1.5, background: PHASE.critical.bg }} />
-        <div style={{ flex: 0.6, background: PHASE.depleted.bg }} />
-        <div
-          style={{
-            position: "absolute",
-            left: `calc(${t * 100}% - 1px)`,
-            top: -3,
-            bottom: -3,
-            width: 2,
-            background: "#0f172a",
-          }}
-        />
-      </div>
-
-      {/* Two numbers + one line */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 14,
-          marginTop: 10,
-          fontSize: 13,
-          color: "#475569",
-        }}
-      >
-        <span style={{ fontVariantNumeric: "tabular-nums" }}>
-          burn <b style={{ color: "#0f172a" }}>{fmtBurn(burnRatePerMin)}</b>
-        </span>
-        <span style={{ color: "#cbd5e1" }}>·</span>
-        <span style={{ fontSize: 12, color: "#94a3b8" }}>based on {basis}</span>
-      </div>
+  const runway = degraded
+    ? "Forecast unavailable"
+    : forecastState === "low_confidence"
+      ? "Estimate unavailable"
+    : forecastState === "stable"
+      ? "No depletion trend"
+      : hoursToShortage == null
+        ? "No shortage projected"
+        : fmtDuration(hoursToShortage);
+  const statusLabel = degraded ? "Needs fresh data" : forecastState === "low_confidence" ? "Low confidence" : phase === "safe" ? "Healthy runway" : phase;
+  return <div>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+      <span style={{ color: phaseInfo.fg, background: phaseInfo.bg, borderRadius: 999, padding: "4px 9px", fontSize: 11, fontWeight: 800, textTransform: "uppercase" }}>{statusLabel}</span>
+      <span style={{ fontSize: 18, fontWeight: 750, color: degraded ? "#92400e" : phaseInfo.fg }}>{runway}</span>
     </div>
-  );
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginTop: 10 }}>
+      <div><div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase" }}>Net burn</div><b style={{ fontSize: 13 }}>{fmtBurn(burnRatePerMin)}</b></div>
+      <div><div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase" }}>Confidence</div><b style={{ fontSize: 13, color: confidence < .5 ? "#b45309" : "#0f172a" }}>{Math.round(confidence * 100)}%</b></div>
+      <div><div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase" }}>8h balance</div><b style={{ fontSize: 13 }}>{projectedBalance8h == null ? "—" : `৳${Math.round(projectedBalance8h).toLocaleString()}`}</b></div>
+    </div>
+    <div style={{ fontSize: 12, color: degraded ? "#92400e" : "#64748b", marginTop: 9, lineHeight: 1.4 }}>{degraded ? degradedReason : basis}</div>
+    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>{forecastAgeMinutes == null ? "Not generated" : `Updated ${forecastAgeMinutes < 1 ? "just now" : `${Math.round(forecastAgeMinutes)} min ago`}`}</div>
+  </div>;
 }

@@ -1,7 +1,7 @@
 // Shared TypeScript types — mirror the FastAPI backend's actual response shapes.
 
 export type Severity = "normal" | "low" | "high" | "critical";
-export type AlertStatus = "open" | "assigned" | "acknowledged" | "under_review" | "resolved" | "escalated" | "compliance_decision" | "closed";
+export type AlertStatus = "open" | "assigned" | "acknowledged" | "under_review" | "in_progress" | "resolved" | "escalated" | "risk_review" | "compliance_decision" | "closed";
 
 export interface Principal {
   username: string;
@@ -31,6 +31,10 @@ export interface DashboardProvider {
   // render these explicitly so a provider never mistakes "—" for "healthy".
   degraded?: boolean;
   degraded_reason?: string | null;
+  forecast_state?: "projected" | "low_confidence" | "stable" | "depleted" | "stale" | "unavailable" | "insufficient_data";
+  forecast_age_minutes?: number | null;
+  forecast_generated_at?: string | null;
+  projected_balance_8h?: number | null;
 }
 
 export interface DashboardAlert {
@@ -44,6 +48,11 @@ export interface DashboardAlert {
   status: AlertStatus;
   owner_role: string;
   owner_label: string;
+  initial_owner?: string;
+  reasons?: string[];
+  evidence?: Array<{ source: string; rule?: string; text: string }>;
+  recommended_actions?: Array<{ key: string; label: string; weight: number }>;
+  fused_explanation?: string;
   created_at: string;
 }
 
@@ -144,8 +153,40 @@ export interface AlertDetail {
     state: string;
     owner_role: string;
     owner_label: string;
+    assigned_to: string;
+    assigned_contact_type: string;
+    resolution_code: string | null;
+    resolution_summary: string | null;
+    closed_at: string | null;
+    risk_recommendation: string | null;
+    risk_recommendation_note: string | null;
+    risk_recommended_by: string | null;
+    risk_recommended_at: string | null;
+    contacts: Record<string, { name: string; phone: string; label: string }> | null;
     notes: Array<{ ts: string; role: string; user: string; text: string }>;
-    audit: Array<{ ts: string; from_state: string | null; to_state: string; actor: string; reason: string }>;
+    audit: Array<{ ts: string; from_state: string | null; to_state: string; actor: string; actor_role?: string; reason: string; owner_from?: string | null; owner_to?: string | null }>;
+    timeline: Array<Record<string, any> & { ts: string; kind: "note" | "transition" }>;
+    explanation: {
+      summary?: string;
+      factors?: string[];
+      uncertainty?: string;
+      recommended_next_step?: string;
+      safe_recommendations?: string[];
+      disclaimer?: string;
+      source?: string;
+      fallback_reason?: string | null;
+    };
+    explanation_provider: "gemini" | "grok" | "groq" | "fallback";
+    explanation_model: string;
+    explanation_status: "pending" | "generated" | "fallback";
+    explanation_error: string | null;
+    explanation_generated_at: string | null;
+    explanation_language: "en" | "bn" | "banglish";
+    latest_explanation_call: {
+      id: number; provider: string; model: string; language: string; endpoint: string;
+      status: string; latency_ms: number; error: string | null; created_at: string;
+      request: Record<string, any>; response: Record<string, any>;
+    } | null;
   };
 }
 
@@ -204,6 +245,42 @@ export interface UserInfo {
 }
 
 export interface UsersList { users: UserInfo[]; }
+
+export interface CashSupportRequest {
+  id: number;
+  alert_id: number;
+  agent_id: number;
+  agent_code: string;
+  agent_name: string;
+  provider: string;
+  requested_by: string;
+  amount: number | null;
+  forecast_balance: number | null;
+  forecast_burn_rate_per_min: number | null;
+  coverage_hours: number;
+  target_balance: number | null;
+  calculation: string;
+  applied_amount: number;
+  balance_after: number | null;
+  applied_at?: string | null;
+  note: string;
+  status: "requested" | "acknowledged" | "approved" | "rejected" | "fulfilled";
+  provider_note: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StakeholderNotification {
+  id: number;
+  alert_id: number;
+  case_id: number;
+  event: string;
+  title: string;
+  message: string;
+  actor: string;
+  created_at: string;
+  read_at: string | null;
+}
 
 export interface DecisionWeights {
   providers: Record<string, Record<string, number>>;

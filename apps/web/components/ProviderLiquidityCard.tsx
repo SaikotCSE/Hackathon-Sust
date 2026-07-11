@@ -31,11 +31,11 @@ function fmtTiny(n: number): string {
 }
 
 function tier(hours: number | null): { label: string; color: string } {
-  if (hours == null) return { label: "no projection", color: "#64748b" };
+  if (hours == null) return { label: "No ETA", color: "#64748b" };
   if (hours < 0.5) return { label: "Critical", color: "#dc2626" };
   if (hours < 2)   return { label: "High",     color: "#ea580c" };
   if (hours < 6)   return { label: "Medium",   color: "#ca8a04" };
-  return                   { label: "Low",      color: "#16a34a" };
+  return                   { label: "Healthy",  color: "#16a34a" };
 }
 
 function demandLabelColor(label?: string): { bg: string; fg: string } {
@@ -57,7 +57,10 @@ export function ProviderLiquidityCard({
   const meta = PROVIDER_STYLE[p.provider] ?? {
     dot: "#64748b", title: p.provider, subtitle: "Mobile wallet", short: p.provider,
   };
-  const tierForHealth = tier(p.hours_to_shortage);
+  const tierForHealth = p.degraded ? { label: "Data needed", color: "#92400e" }
+    : p.forecast_state === "stable" ? { label: "Stable", color: "#16a34a" }
+    : p.forecast_state === "low_confidence" ? { label: "Low confidence", color: "#b45309" }
+    : tier(p.hours_to_shortage);
   const balBg = p.balance == null ? "#f3f4f6" :
     p.balance <= 0 ? "#fee2e2" :
     p.health === "critical" ? "#fee2e2" :
@@ -67,8 +70,8 @@ export function ProviderLiquidityCard({
   const demand = demandLabelColor(p.current_demand_label);
 
   const history = p.history ?? [];
-  const isWalled = p.balance == null && history.length === 0;
     const degraded = !!p.degraded;
+    const statusBg = degraded ? "#fef3c7" : p.forecast_state === "low_confidence" ? "#ffedd5" : HEALTH_BG[p.health] ?? HEALTH_BG.unknown;
 
     return (
       <Card style={{
@@ -84,8 +87,8 @@ export function ProviderLiquidityCard({
             <div style={{ fontWeight: 700, fontSize: 20 }}>{meta.title}</div>
           </div>
           <span style={{
-            background: HEALTH_BG[p.health] ?? HEALTH_BG.unknown,
-            color: HEALTH_FG[p.health] ?? HEALTH_FG.unknown,
+            background: statusBg,
+            color: tierForHealth.color,
             padding: "5px 14px", borderRadius: 999, fontSize: 14, fontWeight: 700,
           }}>{tierForHealth.label}</span>
         </div>
@@ -134,32 +137,14 @@ export function ProviderLiquidityCard({
         </div>
       )}
 
-      {/* Recent deltas line */}
-      <div style={{ fontSize: 14, color: "#475569", marginTop: 14, display: "flex", gap: 12, flexWrap: "wrap" }}>
-        <span style={{ color: "#94a3b8" }}>Recent:</span>
-        {isWalled
-          ? <span style={{ fontStyle: "italic", color: "#94a3b8" }}>walled for this role</span>
-          : (p.recent_deltas?.length
-              ? p.recent_deltas!.map((d, i) => (
-                  <span key={i} style={{ color: d < 0 ? "#dc2626" : "#16a34a", fontVariantNumeric: "tabular-nums" }}>
-                    {d < 0 ? "↓" : "↑"}৳{fmtTiny(Math.abs(d))}
-                  </span>
-                ))
-              : <span style={{ color: "#94a3b8" }}>—</span>)}
-      </div>
-
-      {/* Demand block */}
-      <div style={{ marginTop: 18, fontSize: 14, color: "#0f172a" }}>
-        <div style={{ color: "#64748b", fontSize: 12, textTransform: "uppercase", letterSpacing: 1, fontWeight: 600 }}>
-          Provider-Aware Demand
+      <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <div style={{ background: "#f8fafc", padding: "9px 10px", borderRadius: 8 }}>
+          <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase" }}>8h expected demand</div>
+          <b style={{ fontSize: 14 }}>{p.expected_outflow_next_hours != null ? `৳${fmtTiny(p.expected_outflow_next_hours)}` : "—"}</b>
         </div>
-        <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 16 }}>
-            Current demand: <b style={{ color: demand.fg }}>{(p.current_demand_label ?? "low").replace(/^./, c => c.toUpperCase())}</b>
-          </span>
-        </div>
-        <div style={{ fontSize: 16, marginTop: 6 }}>
-          Next few hours: <b>{p.expected_outflow_next_hours != null ? `~৳${fmtTiny(p.expected_outflow_next_hours)} expected ${p.provider === "physical" ? "cash" : "provider"} outflow` : "—"}</b>
+        <div style={{ background: demand.bg, padding: "9px 10px", borderRadius: 8 }}>
+          <div style={{ fontSize: 10, color: demand.fg, textTransform: "uppercase" }}>Demand pressure</div>
+          <b style={{ fontSize: 14, color: demand.fg }}>{(p.current_demand_label ?? "low").replace(/^./, c => c.toUpperCase())}</b>
         </div>
       </div>
 
@@ -181,11 +166,15 @@ export function ProviderLiquidityCard({
           providerKey={p.provider}
           burnRatePerMin={p.burn_rate_per_min}
           hoursToShortage={p.hours_to_shortage}
+          confidence={p.forecast_confidence}
           forecastSummary={p.forecast_summary}
           forecastReasons={p.forecast_reasons}
           history={history}
           degraded={degraded}
           degradedReason={p.degraded_reason ?? null}
+          forecastState={p.forecast_state}
+          forecastAgeMinutes={p.forecast_age_minutes}
+          projectedBalance8h={p.projected_balance_8h}
         />
       </div>
     </Card>

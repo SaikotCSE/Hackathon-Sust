@@ -10,7 +10,7 @@ import { DecisionRecommendationPanel } from "../../components/DecisionRecommenda
 import { AlertActionStrip } from "../../components/AlertActionStrip";
 import { usePrincipal } from "../../components/PrincipalProvider";
 import { can } from "../../lib/rbac";
-import type { DashboardSummary, CombinedView, DashboardAlert } from "../../lib/types";
+import type { DashboardSummary, CombinedView, DashboardProvider, CashSupportRequest } from "../../lib/types";
 
 // One-time inline keyframes for the "Loading X view…" pill at the bottom
 // of the dashboard. Kept here (not globals.css) so this file's behavior is
@@ -121,7 +121,7 @@ export default function DashboardPage() {
     switch (data.view) {
       case "agent":      return `Liquidity & Risk · ${data.display_name ?? "Agent"}`;
       case "ops":        return `Network Coordination · ${data.scope?.area ?? "—"}`;
-      case "risk":       return `Risk / Compliance Queue`;
+      case "risk":       return `Risk Analyst Review Queue`;
       case "provider":   return `${(data.scope?.provider || "").toString().toUpperCase()} Provider View`;
       case "management": return `Executive Risk Overview`;
       default:           return "Dashboard";
@@ -282,79 +282,6 @@ function CombinedPictureCard({ combined }: { combined?: CombinedView }) {
 }
 
 // ============================================================================
-// BANGLA / BANGLISH ALERT — same live alert data, rendered in Banglish so
-// the agent can verify the numbers match the English view. Strings are
-// generated from the live alert (not hardcoded) — provider, severity,
-// priority score and balance all come from the API response.
-// ============================================================================
-function BanglaAlertExample({ alerts }: { alerts: DashboardAlert[] }) {
-  const a = (alerts ?? [])[0];
-  if (!a) {
-    return (
-      <Card style={{ marginBottom: 18, background: "#f8fafc", border: 0, padding: 18 }}>
-        <div style={{ fontSize: 13, color: "#64748b", letterSpacing: 1, textTransform: "uppercase", fontWeight: 600, marginBottom: 8 }}>
-          বাংলা উদাহরণ (Banglish preview)
-        </div>
-        <div style={{ fontSize: 14, color: "#475569" }}>
-          No active alert right now — Banglish preview not generated. (English view above shows <b>All clear</b>.)
-        </div>
-      </Card>
-    );
-  }
-  // Translate severity / status labels from the live alert — nothing is
-  // hardcoded. Provider name + priority score + balance come from `a`.
-  const severity_bn: Record<string, string> = {
-    normal:   "স্বাভাবিক",
-    low:      "নিম্ন",
-    high:     "উচ্চ",
-    critical: "অত্যন্ত জরুরি",
-  };
-  const status_bn: Record<string, string> = {
-    open: "নতুন",
-    acknowledged: "গৃহীত",
-    review: "পর্যালোচনাধীন",
-    escalated: "উর্ধ্বতন কর্তৃপক্ষের কাছে",
-    resolved: "সমাধান হয়েছে",
-    closed: "বন্ধ",
-  };
-  const sev_bn = severity_bn[a.severity] ?? a.severity;
-  const stat_bn = status_bn[a.status] ?? a.status;
-  // Banglish headline — derived from the live alert so provider name AND
-  // numbers (id, priority, severity, status) all match the English card
-  // above, instead of being hardcoded to "bKash".
-  const provider_bn = (a.provider ?? "").toString().toUpperCase();
-  const headline_bn =
-    `${provider_bn} প্রোভাইডারে অস্বাভাবিক কার্যকলাপ লক্ষ্য করা গেছে — ` +
-    `পর্যালোচনা প্রয়োজন (Alert #${a.id}, priority ${a.priority_score}/100, ` +
-    `severity: ${sev_bn}, status: ${stat_bn}).`;
-
-  return (
-    <Card style={{ marginBottom: 18, background: "#fef9c3", borderColor: "#facc15", padding: 18 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-        <span style={{
-          fontSize: 11, color: "#92400e", letterSpacing: 1, textTransform: "uppercase",
-          fontWeight: 700, padding: "2px 8px", background: "#fde68a", borderRadius: 999,
-        }}>
-          বাংলা উদাহরণ · Banglish
-        </span>
-        <span style={{ fontSize: 12, color: "#92400e" }}>
-          Same live alert — numbers below match the English card above.
-        </span>
-      </div>
-      <div style={{ fontSize: 15, color: "#0f172a", fontWeight: 600, marginBottom: 4 }}>
-        {headline_bn}
-      </div>
-      <div style={{ fontSize: 13, color: "#475569" }}>
-        সারসংক্ষেপ (summary): {a.summary}
-      </div>
-      <div style={{ fontSize: 12, color: "#64748b", marginTop: 6 }}>
-        এই সিস্টেম কখনো লেনদেন সম্পাদন করে না এবং কখনো জালিয়াতির অভিযোগ করে না — সিদ্ধান্ত আপনার।
-      </div>
-    </Card>
-  );
-}
-
-// ============================================================================
 // AGENT VIEW — the screenshot-matching refined dashboard.
 // ============================================================================
 function AgentView({ data, role, busy, inject, onPickAlert, openAlertId, onActionTaken }: {
@@ -371,6 +298,11 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId, onActio
     openAlertId ? ["alert", openAlertId] : null,
     () => client.getAlert(openAlertId as number),
     { refreshInterval: 15000 }
+  );
+  const { data: ownSupport } = useSWR(
+    ["cash-support", "agent", data.agent_id],
+    () => client.getCashSupportRequests(),
+    { refreshInterval: 5000 },
   );
 
   const providers = (data.providers ?? []).filter(p => p.provider !== "physical");
@@ -421,9 +353,26 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId, onActio
           resulting re-fusion show up immediately. */}
       <DecisionRecommendationPanel data={data} onActionTaken={onActionTaken} />
 
-      {/* Bangla / Banglish example — same live alert, Bengali render.
-          Hidden when there are no alerts (we don't fabricate example data). */}
-      <BanglaAlertExample alerts={data.alerts ?? []} />
+      {(ownSupport?.requests?.length ?? 0) > 0 && (
+        <Card style={{ marginTop: 16, borderColor: "#fdba74" }}>
+          <div style={{ fontSize: 12, color: "#9a3412", textTransform: "uppercase", letterSpacing: 1, fontWeight: 700 }}>
+            My cash-support requests
+          </div>
+          {ownSupport!.requests.map(row => (
+            <div key={row.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, paddingTop: 10, marginTop: 10, borderTop: "1px solid #f1f5f9" }}>
+              <div>
+                <b>{row.provider.toUpperCase()}</b> · Alert #{row.alert_id}
+                <div style={{ fontSize: 14, marginTop: 3 }}>Requested: <b>৳{(row.amount ?? 0).toLocaleString()}</b></div>
+                <div style={{ color: "#64748b", fontSize: 13, marginTop: 3 }}>{row.provider_note || row.note}</div>
+                {row.status === "fulfilled" && <div style={{ color: "#166534", fontSize: 13, marginTop: 3 }}>Support coordination recorded complete; no wallet transaction was executed by this platform.</div>}
+              </div>
+              <b style={{ color: row.status === "rejected" ? "#dc2626" : row.status === "fulfilled" ? "#16a34a" : "#c2410c" }}>
+                {row.status.toUpperCase()}
+              </b>
+            </div>
+          ))}
+        </Card>
+      )}
 
       {/* Scenario injectors — role-gated */}
       {can(role, "can_inject_scenario") && (
@@ -549,11 +498,11 @@ function RiskView({ data }: { data: DashboardSummary }) {
     <>
       <Card style={{ marginBottom: 16, background: "#f5f3ff", borderColor: "#c4b5fd" }}>
         <div style={{ fontSize: 11, color: "#5b21b6", letterSpacing: 1, textTransform: "uppercase" }}>
-          Compliance queue
+          Risk analyst review queue
         </div>
         <div style={{ fontSize: 22, fontWeight: 700 }}>{list.length} escalated cases</div>
         <div style={{ fontSize: 13, color: "#5b21b6" }}>
-          Final decisions live here. Only Risk / Compliance may issue a compliance decision or close a case.
+          Escalated cases only. Review evidence and record advisory recommendations; no final wrongdoing determination is made here.
         </div>
       </Card>
       <div style={{ display: "grid", gap: 12 }}>
@@ -569,6 +518,9 @@ function RiskView({ data }: { data: DashboardSummary }) {
                   </div>
                   <div style={{ fontWeight: 700, fontSize: 14 }}>{a.title}</div>
                   <div style={{ fontSize: 12, color: "#475569", marginTop: 4 }}>{a.summary}</div>
+                  <div style={{ fontSize: 12, color: "#6d28d9", marginTop: 5 }}>
+                    Confidence {Math.round(a.confidence * 100)}% · {a.evidence?.length ?? 0} evidence item(s) · Requires Human Review
+                  </div>
                 </div>
                 <div style={{ textAlign: "right", minWidth: 120 }}>
                   <div style={{ fontSize: 11, color: "#64748b" }}>Status</div>
@@ -589,9 +541,29 @@ function RiskView({ data }: { data: DashboardSummary }) {
 function ProviderView({ data }: { data: DashboardSummary }) {
   const list = data.per_agent ?? [];
   const prov = data.scope?.provider;
+  const { data: supportData, mutate: refreshSupport } = useSWR(
+    ["cash-support", prov],
+    () => client.getCashSupportRequests(),
+    { refreshInterval: 5000 },
+  );
+  const [supportBusy, setSupportBusy] = useState<number | null>(null);
+  const [supportError, setSupportError] = useState<string | null>(null);
+  const supportRequests = supportData?.requests ?? [];
+  async function actOnSupport(row: CashSupportRequest, action: "acknowledge" | "approve" | "reject" | "fulfil") {
+    setSupportBusy(row.id);
+    setSupportError(null);
+    try {
+      await client.actOnCashSupport(row.id, action);
+      await refreshSupport();
+    } catch (e: any) {
+      setSupportError(String(e?.message || e));
+    } finally {
+      setSupportBusy(null);
+    }
+  }
   // Defense-in-depth: even if the server forgets to scrub, refuse to render
   // anything that doesn't match the principal's provider.
-  const onlyOwn = (provs?: { provider?: string }[]) =>
+  const onlyOwn = (provs?: DashboardProvider[]) =>
     (provs ?? []).filter(p => p && p.provider === prov);
   return (
     <>
@@ -603,6 +575,44 @@ function ProviderView({ data }: { data: DashboardSummary }) {
         <div style={{ fontSize: 13, color: "#5b21b6" }}>
           You only see this provider's column. Other providers are walled out.
         </div>
+      </Card>
+      <Card style={{ marginBottom: 16, borderColor: supportRequests.some(r => r.status === "requested") ? "#fb923c" : "#e5e7eb" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 12, color: "#9a3412", textTransform: "uppercase", letterSpacing: 1, fontWeight: 700 }}>
+              Cash-support notifications
+            </div>
+            <div style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>
+              {supportRequests.filter(r => !["rejected", "fulfilled"].includes(r.status)).length} active request(s)
+            </div>
+          </div>
+          <span style={{ fontSize: 24 }}>🔔</span>
+        </div>
+        {supportRequests.length === 0 ? (
+          <div style={{ color: "#64748b", marginTop: 12 }}>No agents are currently requesting provider support.</div>
+        ) : supportRequests.map(row => (
+          <div key={row.id} style={{ marginTop: 12, padding: 12, border: "1px solid #e5e7eb", borderRadius: 8, background: row.status === "requested" ? "#fff7ed" : "#fff" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+              <div>
+                <b>{row.agent_name}</b> <span style={{ color: "#64748b" }}>({row.agent_code})</span>
+                <div style={{ fontSize: 16, marginTop: 4 }}>Forecast-sized request: <b>৳{(row.amount ?? 0).toLocaleString()}</b></div>
+                <div style={{ fontSize: 13, color: "#475569", marginTop: 4 }}>{row.note}</div>
+                <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>{row.calculation}</div>
+                {row.forecast_balance != null && <div style={{ fontSize: 12, color: "#64748b", marginTop: 3 }}>Balance at request: ৳{row.forecast_balance.toLocaleString()} · target: ৳{(row.target_balance ?? 0).toLocaleString()} · coverage: {row.coverage_hours}h</div>}
+                {row.status === "fulfilled" && <div style={{ fontSize: 13, color: "#166534", fontWeight: 700, marginTop: 4 }}>✓ Support coordination recorded complete · no wallet transaction executed</div>}
+                <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>Alert #{row.alert_id} · {new Date(row.created_at).toLocaleString()}</div>
+              </div>
+              <b style={{ color: row.status === "rejected" ? "#dc2626" : row.status === "fulfilled" ? "#16a34a" : "#c2410c" }}>{row.status.toUpperCase()}</b>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              {row.status === "requested" && <button disabled={supportBusy === row.id} onClick={() => actOnSupport(row, "acknowledge")} style={btn("#0ea5e9", "#fff")}>Acknowledge</button>}
+              {["requested", "acknowledged"].includes(row.status) && <button disabled={supportBusy === row.id} onClick={() => actOnSupport(row, "approve")} style={btn("#16a34a", "#fff")}>Approve support plan · ৳{(row.amount ?? 0).toLocaleString()}</button>}
+              {["requested", "acknowledged"].includes(row.status) && <button disabled={supportBusy === row.id} onClick={() => actOnSupport(row, "reject")} style={btn("#dc2626", "#fff")}>Reject</button>}
+              {row.status === "approved" && <button disabled={supportBusy === row.id} onClick={() => actOnSupport(row, "fulfil")} style={btn("#7c3aed", "#fff")}>Mark fulfilled</button>}
+            </div>
+          </div>
+        ))}
+        {supportError && <div style={{ color: "#dc2626", fontSize: 13, marginTop: 10 }}>{supportError}</div>}
       </Card>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         {list.map(a => {
@@ -807,7 +817,7 @@ function RecurringProblemsList({
   items, anomalyRollup,
 }: {
   items: { agent_id: number; agent_code: string; display_name: string; provider: string;
-           open_window: number; open_7d: number; is_repeat_offender: boolean; sample_alert_id: number }[];
+           open_window: number; open_7d: number; is_recurring_pattern: boolean; sample_alert_id: number }[];
   anomalyRollup: { area: string; provider: string; anomaly_count: number }[];
 }) {
   const top = [...items].sort((a, b) => b.open_window - a.open_window).slice(0, 8);
@@ -842,12 +852,12 @@ function RecurringProblemsList({
               </td>
               <td style={{ padding: "6px 8px", textAlign: "right", color: "#475569" }}>{r.open_7d}</td>
               <td style={{ padding: "6px 8px" }}>
-                {r.is_repeat_offender ? (
+                {r.is_recurring_pattern ? (
                   <span style={{
                     background: "#fee2e2", color: "#991b1b",
                     padding: "2px 6px", borderRadius: 4, fontSize: 11, fontWeight: 600,
                   }}>
-                    Repeat offender
+                    Recurring pattern
                   </span>
                 ) : (
                   <span style={{ color: "#94a3b8" }}>—</span>
@@ -972,7 +982,7 @@ function ManagementView({ data }: { data: DashboardSummary }) {
               Recurring problems · last {windowMinutes < 1440 ? `${Math.round(windowMinutes / 60)}h` : windowMinutes === 1440 ? "24h" : `${Math.round(windowMinutes / 1440)}d`}
             </div>
             <div style={{ fontSize: 13, color: "#475569", marginTop: 2 }}>
-              Counts compare the open window against a 7-day baseline. "Repeat offender" means the agent has been flagged within both windows.
+              Counts compare the open window against a 7-day baseline. "Recurring pattern" means the agent has review signals in both windows.
             </div>
           </div>
           <div style={{ fontSize: 12, color: "#475569" }}>

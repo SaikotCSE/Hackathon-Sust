@@ -21,19 +21,19 @@ export default function CasesPage() {
     );
   }
 
-  // Risk role gets priority sort + filter to escalated/compliance_decision.
+  // Risk role receives only cases formally escalated by Operations.
   const isRisk = role === "risk";
   const list = (data?.alerts ?? [])
     .filter(a => a.case && !["resolved", "closed"].includes(a.status))
-    .filter(a => isRisk ? ["escalated", "compliance_decision"].includes(a.status) : true)
+    .filter(a => isRisk ? ["escalated", "risk_review"].includes(a.status) : true)
     .sort((a, b) => b.priority_score - a.priority_score);
 
   return (
     <>
       <PageHeader
-        title={isRisk ? "Compliance Queue" : "Cases"}
+        title={isRisk ? "Risk Analyst Review Queue" : "Cases"}
         subtitle={isRisk
-          ? "Escalated + compliance-decision state. Final ruling reserved for risk."
+          ? "Escalated cases only · evidence review and advisory recommendations · no final wrongdoing determination."
           : "State machine: assigned → acknowledged → review → resolved · with audit trail."}
       />
       <Disclaimer />

@@ -14,6 +14,8 @@ import type {
   ScenarioResult,
   TickResult,
   UsersList,
+  CashSupportRequest,
+  StakeholderNotification,
 } from "./types";
 
 export interface TickRequest { hours?: number; provider?: string }
@@ -41,7 +43,11 @@ export interface DataClient {
   getDashboard(agentId?: number): Promise<DashboardSummary>;
   getAlerts(opts?: { status?: string; severity?: string }): Promise<AlertsList>;
   getAlert(id: number): Promise<AlertDetail>;
-  transitionAlert(id: number, action: "ack" | "review" | "resolve" | "escalate" | "decision" | "close", note?: string): Promise<AlertDetail>;
+  transitionAlert(id: number, action: "ack" | "review" | "start" | "resolve" | "escalate" | "close", note?: string): Promise<AlertDetail>;
+  addReviewerNote(id: number, text: string): Promise<NonNullable<AlertDetail["case"]>>;
+  regenerateExplanation(id: number, language?: "en" | "bn" | "banglish"): Promise<NonNullable<AlertDetail["case"]>>;
+  coordinateCase(id: number, action: string, comment: string, target?: string): Promise<NonNullable<AlertDetail["case"]>>;
+  recordRiskRecommendation(id: number, recommendation: string, comment: string): Promise<NonNullable<AlertDetail["case"]>>;
   executeRecommendedAction(id: number, actionKey: RecommendedActionKey, note?: string): Promise<AlertDetail>;
   tickSimulation(req?: TickRequest): Promise<TickResult>;
   injectScenario(req: InjectRequest): Promise<ScenarioResult>;
@@ -53,6 +59,10 @@ export interface DataClient {
   getDecisionWeights(): Promise<DecisionWeights>;
   reloadDecisionWeights(): Promise<{ reloaded: boolean; providers: string[] }>;
   getDashboardSeries(agentId?: number, provider?: string): Promise<DashboardSeriesResponse>;
+  getCashSupportRequests(): Promise<{ requests: CashSupportRequest[] }>;
+  actOnCashSupport(id: number, action: "acknowledge" | "approve" | "reject" | "fulfil", note?: string): Promise<CashSupportRequest>;
+  getNotifications(): Promise<{ notifications: StakeholderNotification[]; unread: number }>;
+  markNotificationRead(id: number): Promise<StakeholderNotification>;
 }
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
@@ -91,6 +101,14 @@ export const apiClient: DataClient = {
       method: "POST",
       body: JSON.stringify({ action, note: note || "" }),
     }),
+  addReviewerNote: (id, text) =>
+    http(`/alerts/${id}/notes`, { method: "POST", body: JSON.stringify({ text }) }),
+  regenerateExplanation: (id, language = "en") =>
+    http(`/alerts/${id}/explanation/regenerate`, { method: "POST", body: JSON.stringify({ language }) }),
+  coordinateCase: (id, action, comment, target) =>
+    http(`/alerts/${id}/coordination`, { method: "POST", body: JSON.stringify({ action, comment, target }) }),
+  recordRiskRecommendation: (id, recommendation, comment) =>
+    http(`/alerts/${id}/risk-recommendation`, { method: "POST", body: JSON.stringify({ recommendation, comment }) }),
   executeRecommendedAction: (id, actionKey, note) =>
     http(`/alerts/${id}/action`, {
       method: "POST",
@@ -115,6 +133,14 @@ export const apiClient: DataClient = {
   reloadDecisionWeights: () => http(`/config/reload`, { method: "POST", body: "{}" }),
   getDashboardSeries: (agentId = 1, provider) =>
     http(`/dashboard/series?agent_id=${agentId}${provider ? `&provider=${provider}` : ""}`),
+  getCashSupportRequests: () => http(`/cash-support`),
+  actOnCashSupport: (id, action, note) =>
+    http(`/cash-support/${id}/action`, {
+      method: "POST",
+      body: JSON.stringify({ action, note: note || "" }),
+    }),
+  getNotifications: () => http(`/notifications`),
+  markNotificationRead: (id) => http(`/notifications/${id}/read`, { method: "POST", body: "{}" }),
 };
 
 export const client: DataClient = apiClient;

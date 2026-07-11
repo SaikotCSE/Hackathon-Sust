@@ -1,5 +1,5 @@
 "use client";
-import React from "react";
+import React, { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import useSWR from "swr";
@@ -33,6 +33,12 @@ export function TopBar({
 }) {
   const path = usePathname();
   const { data } = useSWR("users", () => client.getUsers(), { revalidateOnFocus: false });
+  const { data: inbox, mutate: refreshInbox } = useSWR(
+    principal ? ["notifications", principal.username] : null,
+    () => client.getNotifications(),
+    { refreshInterval: 5000 },
+  );
+  const [showInbox, setShowInbox] = useState(false);
   const role = principal?.role ?? "agent";
   const badge = ROLE_BADGE[role] ?? ROLE_BADGE.agent;
 
@@ -62,6 +68,33 @@ export function TopBar({
         })}
       </nav>
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ position: "relative" }}>
+          <button
+            onClick={() => setShowInbox(v => !v)}
+            aria-label="Stakeholder notifications"
+            style={{ background: "#1e293b", color: "#fff", border: "1px solid #334155", borderRadius: 8, padding: "6px 10px", cursor: "pointer" }}
+          >
+            🔔 {inbox?.unread ?? 0}
+          </button>
+          {showInbox && (
+            <div style={{ position: "absolute", right: 0, top: 40, width: 390, maxHeight: 430, overflowY: "auto", background: "#fff", color: "#0f172a", border: "1px solid #cbd5e1", borderRadius: 10, boxShadow: "0 12px 30px rgba(15,23,42,.22)", zIndex: 1000 }}>
+              <div style={{ padding: 12, fontWeight: 700, borderBottom: "1px solid #e5e7eb" }}>Stakeholder inbox</div>
+              {(inbox?.notifications ?? []).map(n => (
+                <Link
+                  key={n.id}
+                  href={`/alerts/${n.alert_id}`}
+                  onClick={async () => { await client.markNotificationRead(n.id); refreshInbox(); setShowInbox(false); }}
+                  style={{ display: "block", padding: 12, borderBottom: "1px solid #f1f5f9", background: n.read_at ? "#fff" : "#eff6ff", color: "inherit", textDecoration: "none" }}
+                >
+                  <div style={{ fontWeight: n.read_at ? 600 : 800, fontSize: 13 }}>{n.title}</div>
+                  <div style={{ fontSize: 12, color: "#475569", marginTop: 3 }}>{n.message}</div>
+                  <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>{new Date(n.created_at).toLocaleString()} · {n.actor}</div>
+                </Link>
+              ))}
+              {(inbox?.notifications.length ?? 0) === 0 && <div style={{ padding: 14, color: "#64748b", fontSize: 13 }}>No case handoffs yet.</div>}
+            </div>
+          )}
+        </div>
         <span style={{ fontSize: 13, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 1 }}>
           Role
         </span>

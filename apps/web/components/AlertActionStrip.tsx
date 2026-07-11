@@ -8,9 +8,9 @@ import type { AlertDetail } from "../lib/types";
 const ACTION_STYLE: Record<string, { label: string; color: string; hint: string }> = {
   ack:      { label: "Acknowledge",       color: "#0ea5e9", hint: "I see this — taking ownership." },
   review:   { label: "Start review",      color: "#ca8a04", hint: "Open the case and start investigation." },
+  start:    { label: "Begin coordination", color: "#ea580c", hint: "Move reviewed case into active operational coordination." },
   resolve:  { label: "Resolve",           color: "#16a34a", hint: "Case handled — close out." },
   escalate: { label: "Escalate to risk",  color: "#7c3aed", hint: "Hands off to Risk / Compliance." },
-  decision: { label: "Compliance decision", color: "#0891b2", hint: "Final compliance ruling." },
   close:    { label: "Close (compliance)", color: "#374151", hint: "Case closed — final." },
 };
 
@@ -28,7 +28,16 @@ export function AlertActionStrip({
   const [error, setError] = useState<string | null>(null);
 
   const actions = alert.recommended_actions ?? [];
-  const transitionActions = ["ack", "review", "resolve", "escalate", "decision", "close"];
+  const transitionActions = ["ack", "review", "start", "resolve", "escalate", "close"];
+  const legalByState: Record<string, string[]> = {
+    assigned: ["ack", "escalate"],
+    acknowledged: ["review", "escalate"],
+    review: ["start", "escalate"],
+    in_progress: ["resolve", "escalate"],
+    escalated: [], risk_review: [], compliance_decision: [],
+    resolved: ["close"], closed: [],
+  };
+  const caseState = alert.case?.state ?? "";
 
   async function go(action: string) {
     setBusy(action);
@@ -79,18 +88,22 @@ export function AlertActionStrip({
           {transitionActions.map(a => {
             const meta = ACTION_STYLE[a];
             const allowed = canPerformAction(role, a);
+            const providerOwnsWorkflow = role !== "provider" || alert.initial_owner === "data-quality";
+            const legal = (legalByState[caseState] ?? []).includes(a);
+            const requiresReason = true;
+            const canFire = allowed && providerOwnsWorkflow && legal && (!requiresReason || note.trim().length > 0);
             return (
               <button
                 key={a}
                 onClick={() => go(a)}
-                disabled={!allowed || busy === a}
-                title={allowed ? meta.hint : `${role ?? "—"} cannot ${a}`}
+                disabled={!canFire || busy === a}
+                title={!allowed || !providerOwnsWorkflow ? `${role ?? "—"} cannot ${a} this case` : !legal ? `${a} is not valid while case is ${caseState}` : requiresReason && !note.trim() ? "Add an audit note first" : meta.hint}
                 style={{
-                  background: allowed ? meta.color : "#e5e7eb",
-                  color: allowed ? "#fff" : "#94a3b8",
+                  background: canFire ? meta.color : "#e5e7eb",
+                  color: canFire ? "#fff" : "#94a3b8",
                   border: 0, borderRadius: 6,
                   padding: "6px 12px", fontSize: 13, fontWeight: 600,
-                  cursor: allowed ? "pointer" : "not-allowed",
+                  cursor: canFire ? "pointer" : "not-allowed",
                   opacity: busy === a ? 0.7 : 1,
                 }}
               >

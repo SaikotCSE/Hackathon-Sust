@@ -3,10 +3,14 @@
 
 export type Role = "agent" | "ops" | "risk" | "provider" | "management";
 
+// The capability name intentionally avoids the word "fraud" — it gates whether
+// the role may issue the final compliance decision (i.e. close the case after
+// review). The system does not declare fraud anywhere in the source; the
+// capability simply enforces who has authority to mark a case closed.
 export type Capability =
   | "can_see_own_agent_only"
   | "can_act_on_alerts"
-  | "can_close_fraud"
+  | "can_close_compliance_case"
   | "can_dispatch"
   | "can_see_all_providers"
   | "can_inject_scenario"
@@ -33,7 +37,7 @@ const ROLE_PERMS: Record<Role, Capability[]> = {
   ],
   risk: [
     "can_act_on_alerts",
-    "can_close_fraud",
+    "can_close_compliance_case",
     "can_see_all_providers",
     "can_view_metrics",
     "can_view_cases",

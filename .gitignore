@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.tsbuildinfo
+
+# Editor / tooling
+.vscode/
+.idea/
+.puku/
+.DS_Store
+
+# Problem statement binary (tracked as .md only)
+*.pdf

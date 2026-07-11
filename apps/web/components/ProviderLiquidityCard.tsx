@@ -19,8 +19,8 @@ const HEALTH_FG: Record<string, string> = {
 
 function fmtBDT(n: number | null | undefined): string {
   if (n == null) return "—";
-  if (Math.abs(n) >= 1000) return `৳${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-  return `৳${n.toFixed(0)}`;
+  if (Math.abs(n) >= 1000) return `৳${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  return `৳${n.toFixed(2)}`;
 }
 
 function fmtTiny(n: number): string {
@@ -45,7 +45,14 @@ function demandLabelColor(label?: string): { bg: string; fg: string } {
   }
 }
 
-export function ProviderLiquidityCard({ p }: { p: DashboardProvider }) {
+export function ProviderLiquidityCard({
+  p,
+  chart,
+}: {
+  p: DashboardProvider;
+  /** Optional line-chart slot rendered just under the big balance. */
+  chart?: React.ReactNode;
+}) {
   const meta = PROVIDER_STYLE[p.provider] ?? {
     dot: "#64748b", title: p.provider, subtitle: "Mobile wallet", short: p.provider,
   };
@@ -61,122 +68,110 @@ export function ProviderLiquidityCard({ p }: { p: DashboardProvider }) {
   const demand = demandLabelColor(p.current_demand_label);
 
   const history = p.history ?? [];
-  const isWalled = p.balance == null && (p.history ?? []).length === 0;
+  const isWalled = p.balance == null && history.length === 0;
 
   return (
     <Card style={{
       background: balBg,
       borderColor: p.health === "critical" ? "#fecaca" : p.health === "high" ? "#fed7aa" : "#e5e7eb",
       position: "relative",
+      padding: 18,
     }}>
       {/* Header row */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ width: 10, height: 10, borderRadius: 999, background: meta.dot, display: "inline-block" }} />
-          <div style={{ fontWeight: 700, fontSize: 14 }}>{meta.title}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ width: 14, height: 14, borderRadius: 999, background: meta.dot, display: "inline-block" }} />
+          <div style={{ fontWeight: 700, fontSize: 20 }}>{meta.title}</div>
         </div>
         <span style={{
           background: HEALTH_BG[p.health] ?? HEALTH_BG.unknown,
           color: HEALTH_FG[p.health] ?? HEALTH_FG.unknown,
-          padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 700,
+          padding: "5px 14px", borderRadius: 999, fontSize: 14, fontWeight: 700,
         }}>{tierForHealth.label}</span>
       </div>
-      {/* Sub-line */}
-      <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>
+
+      {/* Data quality line */}
+      <div style={{ fontSize: 14, color: "#64748b", marginTop: 8 }}>
         {p.data_quality < 0.7
-          ? <span style={{ color: "#dc2626" }}>Data quality degraded ({Math.round(p.data_quality * 100)}%)</span>
-          : "Data quality: ok"}
-        {p.forecast_reasons?.[0] && (
-          <span style={{ marginLeft: 6, color: "#94a3b8" }}>
-            · {p.forecast_reasons[0]}
-          </span>
-        )}
+          ? <span style={{ color: "#dc2626", fontWeight: 600 }}>Data quality degraded ({Math.round(p.data_quality * 100)}%)</span>
+          : "Data Quality: Ok"}
       </div>
 
-      {/* Big balance */}
+      {/* Big balance — true headline of the card */}
       <div style={{
-        fontSize: 28, fontWeight: 800, marginTop: 10,
+        fontSize: 44, fontWeight: 800, marginTop: 12, lineHeight: 1.05, letterSpacing: -0.5,
         color: p.balance == null ? "#94a3b8" : p.balance <= 0 ? "#dc2626" : "#0f172a",
       }}>
         {fmtBDT(p.balance)}
       </div>
 
-      {/* Sparkline */}
-      {!isWalled && history.length > 1 && (
-        <svg width="100%" height="36" viewBox={`0 0 ${history.length * 12} 36`} preserveAspectRatio="none" style={{ marginTop: 6 }}>
-          {(() => {
-            const max = Math.max(...history, 1);
-            const min = Math.min(...history, 0);
-            const range = Math.max(max - min, 1);
-            const pts = history.map((b, i) => {
-              const x = i * 12;
-              const y = 34 - ((b - min) / range) * 32;
-              return `${x},${y}`;
-            }).join(" ");
-            return <>
-              <polyline points={pts} fill="none" stroke={meta.dot} strokeWidth="2" />
-              {/* last-point dot */}
-              {(() => {
-                const last = history[history.length - 1];
-                const x = (history.length - 1) * 12;
-                const y = 34 - ((last - min) / range) * 32;
-                return <circle cx={x} cy={y} r="3" fill={meta.dot} />;
-              })()}
-            </>;
-          })()}
-        </svg>
+      {/* Per-card time-series chart — sits right under the amount so the
+          eye reads amount → trend → projection in one continuous block. */}
+      {chart && (
+        <div style={{
+          marginTop: 14,
+          marginLeft: -6,
+          marginRight: -6,
+        }}>
+          {chart}
+        </div>
       )}
 
       {/* Recent deltas line */}
-      <div style={{ fontSize: 12, color: "#475569", marginTop: 8, display: "flex", gap: 12, flexWrap: "wrap" }}>
+      <div style={{ fontSize: 14, color: "#475569", marginTop: 14, display: "flex", gap: 12, flexWrap: "wrap" }}>
         <span style={{ color: "#94a3b8" }}>Recent:</span>
         {isWalled
           ? <span style={{ fontStyle: "italic", color: "#94a3b8" }}>walled for this role</span>
           : (p.recent_deltas?.length
               ? p.recent_deltas!.map((d, i) => (
                   <span key={i} style={{ color: d < 0 ? "#dc2626" : "#16a34a", fontVariantNumeric: "tabular-nums" }}>
-                    {d < 0 ? "↓" : "↑"} ৳{fmtTiny(d)}
+                    {d < 0 ? "↓" : "↑"}৳{fmtTiny(Math.abs(d))}
                   </span>
                 ))
               : <span style={{ color: "#94a3b8" }}>—</span>)}
       </div>
 
       {/* Demand block */}
-      <div style={{ marginTop: 12, fontSize: 12, color: "#0f172a" }}>
-        <div style={{ color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>
-          Provider-aware demand
+      <div style={{ marginTop: 18, fontSize: 14, color: "#0f172a" }}>
+        <div style={{ color: "#64748b", fontSize: 12, textTransform: "uppercase", letterSpacing: 1, fontWeight: 600 }}>
+          Provider-Aware Demand
         </div>
-        <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 13 }}>
-            Current demand: <b style={{ color: demand.fg }}>{(p.current_demand_label ?? "low").toUpperCase()}</b>
+        <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 16 }}>
+            Current demand: <b style={{ color: demand.fg }}>{(p.current_demand_label ?? "low").replace(/^./, c => c.toUpperCase())}</b>
           </span>
-          <span style={{ color: "#94a3b8" }}>·</span>
-          <span style={{ fontSize: 13 }}>
-            Next few hours: <b>{p.expected_outflow_next_hours != null ? `~৳${fmtTiny(p.expected_outflow_next_hours)} expected provider outflow` : "—"}</b>
-          </span>
+        </div>
+        <div style={{ fontSize: 16, marginTop: 6 }}>
+          Next few hours: <b>{p.expected_outflow_next_hours != null ? `~৳${fmtTiny(p.expected_outflow_next_hours)} expected ${p.provider === "physical" ? "cash" : "provider"} outflow` : "—"}</b>
         </div>
       </div>
 
-      {/* Shortage */}
-      <div style={{ marginTop: 10, fontSize: 12, color: "#0f172a" }}>
-        <div style={{ color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>
-          Projected service pressure
+      {/* Projected service pressure — forecast lives here, per card */}
+      <div style={{ marginTop: 16, fontSize: 14, color: "#0f172a" }}>
+        <div style={{ color: "#64748b", fontSize: 12, textTransform: "uppercase", letterSpacing: 1, fontWeight: 600 }}>
+          Projected Service Pressure
         </div>
-        <div style={{ marginTop: 4, fontSize: 13 }}>
-          Estimated cash shortage in <b style={{ color: tierForHealth.color }}>{p.shortage_eta_human ?? "—"}</b>
+        <div style={{ marginTop: 8, fontSize: 16 }}>
+          Estimated {p.provider === "physical" ? "cash" : `${meta.short} balance`} shortage in{" "}
+          <b style={{ color: tierForHealth.color }}>{p.shortage_eta_human ?? "—"}</b>.
+        </div>
+        <div style={{ fontSize: 13, color: "#64748b", marginTop: 6 }}>
+          based on {p.provider === "physical"
+            ? `shared cash drawer drawdown over ~${Math.max(1, Math.round(history.length / 2))} hours`
+            : `the last ${Math.max(1, history.length)} intervals' average outflow rate`}
         </div>
       </div>
 
       {/* Confidence */}
-      <div style={{ marginTop: 10 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#64748b" }}>
-          <span>Confidence score</span>
+      <div style={{ marginTop: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#475569", fontWeight: 600 }}>
+          <span>Confidence Score</span>
           <span style={{ color: confColor, fontWeight: 700 }}>{conf}%</span>
         </div>
-        <div style={{ height: 6, background: "#e5e7eb", borderRadius: 999, marginTop: 4, overflow: "hidden" }}>
+        <div style={{ height: 10, background: "#e5e7eb", borderRadius: 999, marginTop: 8, overflow: "hidden" }}>
           <div style={{ width: `${conf}%`, height: "100%", background: confColor }} />
         </div>
-        <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>
+        <div style={{ fontSize: 13, color: "#64748b", marginTop: 8 }}>
           Confidence reflects recent trend stability and {p.provider === "physical" ? "shared cash drawer" : "provider"} data quality.
         </div>
       </div>

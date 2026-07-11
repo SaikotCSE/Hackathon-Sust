@@ -5,7 +5,8 @@ import { client } from "../../lib/client";
 import { Card, Disclaimer, PageHeader } from "../../components/Primitives";
 import { AlertCard } from "../../components/AlertCard";
 import { ProviderLiquidityCard } from "../../components/ProviderLiquidityCard";
-import { ForwardLookingForecast } from "../../components/ForwardLookingForecast";
+import { ProviderChartCard } from "../../components/ProviderChartCard";
+import { DecisionRecommendationPanel } from "../../components/DecisionRecommendationPanel";
 import { AlertActionStrip } from "../../components/AlertActionStrip";
 import { usePrincipal } from "../../components/PrincipalProvider";
 import { can } from "../../lib/rbac";
@@ -116,16 +117,16 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId }: {
 
   return (
     <>
-      <Card style={{ marginBottom: 16, background: scoreBg, border: 0 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <Card style={{ marginBottom: 18, background: scoreBg, border: 0, padding: 22 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 28 }}>
           <div>
-            <div style={{ fontSize: 11, color: "#64748b", letterSpacing: 1, textTransform: "uppercase" }}>
+            <div style={{ fontSize: 13, color: "#64748b", letterSpacing: 1.2, textTransform: "uppercase", fontWeight: 600 }}>
               Overall pressure score
             </div>
-            <div style={{ fontSize: 32, fontWeight: 700 }}>{data.overall_score} / 100</div>
-            <div style={{ fontSize: 13, color: "#475569" }}>{data.overall_reason}</div>
+            <div style={{ fontSize: 56, fontWeight: 800, lineHeight: 1.02, letterSpacing: -1 }}>{data.overall_score} / 100</div>
+            <div style={{ fontSize: 16, color: "#475569", marginTop: 6 }}>{data.overall_reason}</div>
           </div>
-          <div style={{ textAlign: "right", fontSize: 12, color: "#475569" }}>
+          <div style={{ textAlign: "right", fontSize: 15, color: "#475569", lineHeight: 1.7 }}>
             Physical cash: <b>৳ {(data.physical_cash ?? 0).toLocaleString()}</b><br />
             Open alerts: <b>{(data.alerts ?? []).filter(a => a.status !== "resolved" && a.status !== "closed").length}</b><br />
             Data quality: <b>{data.providers?.length ? `${Math.round((data.providers.reduce((s,p) => s+p.data_quality,0) / data.providers.length) * 100)}%` : "—"}</b>
@@ -133,23 +134,34 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId }: {
         </div>
       </Card>
 
-      {/* Provider liquidity cards — the screenshot */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 16 }}>
+      {/* Provider liquidity cards — each card now pairs with a real
+          time-series chart (x/y axes + burn-rate projection to ৳0).
+          The grid fills the wider page (4 cols on wide screens, 2 on
+          narrow) so we don't get dead space on either side. */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))",
+        gap: 18,
+        marginBottom: 20,
+      }}>
         {[physical, ...providers].filter(Boolean).map(p => (
-          <ProviderLiquidityCard key={p!.provider} p={p!} />
+          <ProviderChartCard key={p!.provider} p={p!} agentId={data.agent_id ?? 1} />
         ))}
       </div>
 
-      {/* Forward-looking forecast */}
-      <ForwardLookingForecast providers={providers} physical={physical} />
+      {/* Decision Intelligence — what should I do next? (replaces the
+          Forward-Looking Forecast panel: every provider card now carries
+          its own forecast, so the global section is freed up for the
+          prioritized recommended-action view.) */}
+      <DecisionRecommendationPanel data={data} />
 
       {/* Scenario injectors — role-gated */}
       {can(role, "can_inject_scenario") && (
-        <Card style={{ marginTop: 16, marginBottom: 16 }}>
-          <div style={{ fontSize: 12, color: "#64748b", letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>
+        <Card style={{ marginTop: 18, marginBottom: 18 }}>
+          <div style={{ fontSize: 13, color: "#64748b", letterSpacing: 1, textTransform: "uppercase", marginBottom: 10, fontWeight: 600 }}>
             Inject what-if scenario (for demo)
           </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             {SCENARIOS.map(s => (
               <button key={s.kind} onClick={() => inject(s.kind)} disabled={busy === s.kind} style={btn(s.color, "#fff")}>
                 {busy === s.kind ? "…" : s.label}
@@ -160,13 +172,13 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId }: {
       )}
 
       {/* Active alerts */}
-      <h2 style={{ fontSize: 16, fontWeight: 700, marginTop: 8 }}>
+      <h2 style={{ fontSize: 22, fontWeight: 700, marginTop: 12, marginBottom: 12, letterSpacing: -0.2 }}>
         Active alerts ({(data.alerts ?? []).length})
       </h2>
       {(data.alerts ?? []).length === 0 && (
-        <Card><div style={{ color: "#64748b" }}>All clear. No active alerts.</div></Card>
+        <Card><div style={{ color: "#64748b", fontSize: 15 }}>All clear. No active alerts.</div></Card>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         {(data.alerts ?? []).map(a => (
           <a key={a.id} href={`/alerts/${a.id}`} onClick={(e) => { e.preventDefault(); onPickAlert(a.id); }} style={{ textDecoration: "none", color: "inherit" }}>
             <AlertCard alert={a} />
@@ -176,14 +188,14 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId }: {
 
       {/* The "what action to take next" panel — opens when an alert card is clicked */}
       {openAlertId && (
-        <Card style={{ marginTop: 16 }}>
+        <Card style={{ marginTop: 18 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ fontWeight: 700, fontSize: 14 }}>Take action on Alert #{openAlertId}</div>
-            <button onClick={() => onPickAlert(null)} style={{ background: "transparent", border: 0, color: "#94a3b8", cursor: "pointer" }}>close</button>
+            <div style={{ fontWeight: 700, fontSize: 17 }}>Take action on Alert #{openAlertId}</div>
+            <button onClick={() => onPickAlert(null)} style={{ background: "transparent", border: 0, color: "#94a3b8", cursor: "pointer", fontSize: 14 }}>close</button>
           </div>
           {open
             ? <AlertActionStrip alert={open} onChanged={() => { /* swr auto-refresh */ }} />
-            : <div style={{ color: "#94a3b8", fontSize: 12 }}>Loading…</div>}
+            : <div style={{ color: "#94a3b8", fontSize: 14 }}>Loading…</div>}
         </Card>
       )}
     </>
@@ -200,11 +212,11 @@ function OpsView({ data, onSelectAgent }: { data: DashboardSummary; onSelectAgen
       <Card style={{ marginBottom: 16, background: "#ecfeff", borderColor: "#67e8f9" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
-            <div style={{ fontSize: 11, color: "#155e75", letterSpacing: 1, textTransform: "uppercase" }}>
+            <div style={{ fontSize: 13, color: "#155e75", letterSpacing: 1, textTransform: "uppercase", fontWeight: 600 }}>
               Network Coordination
             </div>
-            <div style={{ fontSize: 22, fontWeight: 700 }}>{list.length} agents under {data.scope?.area ?? "—"} coverage</div>
-            <div style={{ fontSize: 13, color: "#155e75" }}>
+            <div style={{ fontSize: 26, fontWeight: 700 }}>{list.length} agents under {data.scope?.area ?? "—"} coverage</div>
+            <div style={{ fontSize: 15, color: "#155e75" }}>
               Your job: assign field officers, balance cash across outlets, escalate persistent cases.
             </div>
           </div>
@@ -212,42 +224,42 @@ function OpsView({ data, onSelectAgent }: { data: DashboardSummary; onSelectAgen
       </Card>
       {list.length === 0 && (
         <Card>
-          <div style={{ color: "#64748b" }}>
+          <div style={{ color: "#64748b", fontSize: 15 }}>
             No agents yet in <b>{data.scope?.area ?? "your area"}</b>. Seed additional agents to populate this view.
           </div>
         </Card>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         {list.map(a => (
           <a key={a.agent_id} href={`/dashboard?agent_id=${a.agent_id}`} style={{ textDecoration: "none", color: "inherit" }}>
             <Card>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: 14 }}>{a.display_name}</div>
-                  <div style={{ fontSize: 11, color: "#94a3b8" }}>{a.agent_code} · {a.area}</div>
+                  <div style={{ fontWeight: 700, fontSize: 17 }}>{a.display_name}</div>
+                  <div style={{ fontSize: 13, color: "#94a3b8" }}>{a.agent_code} · {a.area}</div>
                 </div>
                 <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: 11, color: "#64748b" }}>Pressure</div>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: a.overall_score >= 70 ? "#dc2626" : a.overall_score >= 40 ? "#ca8a04" : "#16a34a" }}>
+                  <div style={{ fontSize: 13, color: "#64748b" }}>Pressure</div>
+                  <div style={{ fontSize: 26, fontWeight: 700, color: a.overall_score >= 70 ? "#dc2626" : a.overall_score >= 40 ? "#ca8a04" : "#16a34a" }}>
                     {a.overall_score}/100
                   </div>
                 </div>
               </div>
-              <div style={{ fontSize: 12, color: "#475569", marginTop: 8 }}>{a.overall_reason}</div>
-              <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 14, color: "#475569", marginTop: 10 }}>{a.overall_reason}</div>
+              <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
                 {(a.providers ?? []).map(p => (
                   <span key={p.provider} style={{
                     background: p.health === "critical" ? "#fee2e2"
                               : p.health === "high"     ? "#ffedd5"
                               : p.health === "low"      ? "#fef9c3"
                               : p.health === "unknown"  ? "#e5e7eb" : "#dcfce7",
-                    color: "#0f172a", padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 600,
+                    color: "#0f172a", padding: "4px 10px", borderRadius: 999, fontSize: 13, fontWeight: 600,
                   }}>
                     {p.provider}: {p.balance != null ? `৳${p.balance.toLocaleString()}` : "—"}
                   </span>
                 ))}
               </div>
-              <div style={{ fontSize: 11, color: "#dc2626", marginTop: 8, fontWeight: 600 }}>
+              <div style={{ fontSize: 13, color: "#dc2626", marginTop: 10, fontWeight: 600 }}>
                 {(a.alerts ?? []).filter(x => x.status !== "resolved" && x.status !== "closed").length} open alerts
               </div>
             </Card>

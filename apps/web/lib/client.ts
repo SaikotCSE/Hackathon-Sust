@@ -5,6 +5,7 @@
 import type {
   AlertsList,
   AlertDetail,
+  DashboardSeriesResponse,
   DashboardSummary,
   DecisionWeights,
   DQEventRow,
@@ -40,6 +41,7 @@ export interface DataClient {
   getUsers(): Promise<UsersList>;
   getDecisionWeights(): Promise<DecisionWeights>;
   reloadDecisionWeights(): Promise<{ reloaded: boolean; providers: string[] }>;
+  getDashboardSeries(agentId?: number, provider?: string): Promise<DashboardSeriesResponse>;
 }
 
 const BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
@@ -86,6 +88,8 @@ export const apiClient: DataClient = {
   getUsers: () => http(`/users`),
   getDecisionWeights: () => http(`/config/decision-weights`),
   reloadDecisionWeights: () => http(`/config/reload`, { method: "POST", body: "{}" }),
+  getDashboardSeries: (agentId = 1, provider) =>
+    http(`/dashboard/series?agent_id=${agentId}${provider ? `&provider=${provider}` : ""}`),
 };
 
 export const client: DataClient = apiClient;

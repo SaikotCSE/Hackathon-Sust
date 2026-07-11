@@ -142,6 +142,19 @@ export interface MetricsSnapshot {
   generated_at: string;
 }
 
+export interface DashboardSeriesPoint { ts: string; balance: number }
+export interface DashboardSeries {
+  provider: string;
+  points: DashboardSeriesPoint[];
+  burn_rate_per_min: number;
+  hours_to_shortage: number | null;
+  confidence: number;
+}
+export interface DashboardSeriesResponse {
+  agent_id: number;
+  series: DashboardSeries[];
+}
+
 export interface TickResult {
   ticked: number;
   new_alerts: Array<{ id: number; severity: Severity; title: string; provider: string | null }>;

@@ -18,7 +18,7 @@ from ..db import get_session
 from ..models.database import Agent, Alert, AnomalyEvent, BalanceHistory
 from ..services.auth import Principal, current_principal
 from ..services.liquidity import rate_projection
-from ..services.snapshots import agent_snapshot, overall_score
+from ..services.snapshots import agent_snapshot, batch_agent_snapshots, overall_score
 from ..simulation.engine import PROVIDERS
 
 
@@ -215,11 +215,11 @@ def dashboard(
     # ----- Provider: only their provider's column across the agents they cover
     if role == "provider" and principal.provider:
         agents = session.exec(select(Agent).order_by(Agent.id)).all()
+        agent_ids = [a.id for a in agents]
+        # Batch: 4 queries total instead of N×(per-agent queries)
+        snapshots = batch_agent_snapshots(session, agent_ids)
         per_agent = []
-        for a in agents:
-            snap = agent_snapshot(session, a.id)
-            if not snap:
-                continue
+        for snap in snapshots:
             _enforce_provider_wall(snap, principal)
             per_agent.append(snap)
         return {
@@ -271,8 +271,14 @@ def dashboard(
         # agent-level rollup at the top of the page.
         all_agent_rows: list[dict] = []
 
+        # Build all per-agent snapshots in one batched call instead of
+        # N × ~14 individual queries. The batched snapshots preserve
+        # the exact same shape the rest of the management rollup expects.
+        all_snaps = batch_agent_snapshots(session, [a.id for a in agents])
+        snap_by_agent = {s["agent_id"]: s for s in all_snaps}
+
         for a in agents:
-            snap = agent_snapshot(session, a.id)
+            snap = snap_by_agent.get(a.id)
             if not snap:
                 skipped_agents += 1
                 continue
@@ -529,8 +535,8 @@ def dashboard(
                 | Agent.area.startswith(f"{area} ")
             )
         agents = session.exec(agents_q.order_by(Agent.id)).all()
-        per_agent = [agent_snapshot(session, a.id) for a in agents]
-        per_agent = [s for s in per_agent if s]
+        # Batch: one pass over the agents instead of N × 14 queries each.
+        per_agent = batch_agent_snapshots(session, [a.id for a in agents])
         return {
             "view": "ops",
             "scope": {"area": area, "agent_count": len(per_agent)},

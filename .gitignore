@@ -13,6 +13,10 @@ node_modules/
 .next/
 out/
 .tsbuildinfo
+tsconfig.tsbuildinfo
+
+# API runtime data (SQLite DB, scenario state)
+apps/api/.data/
 
 # Editor / tooling
 .vscode/

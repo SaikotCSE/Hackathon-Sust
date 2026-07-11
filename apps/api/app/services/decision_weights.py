@@ -196,7 +196,7 @@ def _owner_for(initial_owner: str, severity: str) -> Tuple[str, str]:
         return "provider", "Financial Service Provider — feed owner"
     if initial_owner == "anomaly":
         if severity == "critical":
-            return "risk", "Risk / Compliance Analyst (final call)"
+            return "risk", "Risk analyst (final call)"
         return "ops", "Provider Operations / Network Coordination (initial triage)"
     # liquidity
     if severity == "critical":

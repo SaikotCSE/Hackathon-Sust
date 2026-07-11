@@ -260,14 +260,21 @@ def seed_if_empty(session: Session) -> Agent:
         ("agent",     "agent",     "Multi-Provider Agent",         None),
         ("ops",       "ops",       "Provider Operations",          None),
         ("field",     "ops",       "Field Officer (Ops tier)",     None),
-        ("risk",      "risk",      "Risk / Compliance Analyst",    None),
+        ("risk",      "risk",      "Risk analyst",                 None),
         ("provider_bkash",  "provider", "bKash Provider View",   "bkash"),
         ("provider_nagad",  "provider", "Nagad Provider View",   "nagad"),
         ("provider_rocket", "provider", "Rocket Provider View",  "rocket"),
         ("mgmt",      "management", "Management",                   None),
     ]
     for username, role, name, provider in seed_users:
-        session.add(User(username=username, display_name=name, role=role, provider=provider, area="Dhaka"))
+        # Idempotent — only insert if a row with this username doesn't
+        # already exist. This protects the user roster from accumulating
+        # duplicate rows across reboots of the prototype (and from stale
+        # rows like a legacy "Area Manager (Ops tier)" entry that was
+        # never declared in this seed list in the first place).
+        exists = session.exec(select(User).where(User.username == username)).first()
+        if exists is None:
+            session.add(User(username=username, display_name=name, role=role, provider=provider, area="Dhaka"))
     session.commit()
 
     # Return the demo super agent (kept for back-compat with the original

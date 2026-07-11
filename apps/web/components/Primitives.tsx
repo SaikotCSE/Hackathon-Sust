@@ -1,15 +1,18 @@
 "use client";
 import React from "react";
+import type { Severity } from "../lib/types";
 
-const SEV: Record<string, { bg: string; fg: string; label: string }> = {
+const SEV: Record<Severity, { bg: string; fg: string; label: string }> = {
+  normal:   { bg: "#e0e7ff", fg: "#3730a3", label: "Normal" },
   low:      { bg: "#dcfce7", fg: "#166534", label: "Low" },
-  medium:   { bg: "#fef9c3", fg: "#854d0e", label: "Medium" },
   high:     { bg: "#ffedd5", fg: "#9a3412", label: "High" },
   critical: { bg: "#fee2e2", fg: "#991b1b", label: "Critical" },
 };
 
-export function SeverityPill({ severity }: { severity: string }) {
-  const s = SEV[severity] || SEV.low;
+const SEV_ORDER: Severity[] = ["normal", "low", "high", "critical"];
+
+export function SeverityPill({ severity }: { severity: Severity }) {
+  const s = SEV_ORDER.includes(severity) ? SEV[severity] : SEV.normal;
   return (
     <span style={{ background: s.bg, color: s.fg, padding: "2px 8px", borderRadius: 999, fontSize: 12, fontWeight: 600 }}>
       {s.label}

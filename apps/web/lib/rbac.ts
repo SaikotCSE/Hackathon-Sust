@@ -115,19 +115,19 @@ export function dashboardViewFor(role: Role | string | undefined): string {
 
 export const ROLE_LABELS: Record<string, string> = {
   agent:      "Multi-Provider Agent",
-  ops:        "Provider Operations",
-  risk:       "Risk / Compliance Analyst",
+  ops:        "Operations_provider",
+  risk:       "Risk analyst",
   provider:   "Provider View",
   management: "Management",
 };
 
 // Map seed usernames to a friendly "tier" label for the dashboard header.
 export const USERNAME_TIER: Record<string, string> = {
-  field:   "Field Officer",
-  ops:     "Provider Operations",
+  field:   "Operations_provider",
+  ops:     "Operations_provider",
 };
 
 export function tierFor(username: string, role: string): string {
-  if (role === "ops") return USERNAME_TIER[username] ?? "Network Coordination";
+  if (role === "ops") return USERNAME_TIER[username] ?? "Operations_provider";
   return ROLE_LABELS[role] ?? "User";
 }

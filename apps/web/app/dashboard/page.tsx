@@ -533,7 +533,7 @@ function ProviderView({ data }: { data: DashboardSummary }) {
               {myAlerts.length > 0 && (
                 <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
                   {myAlerts.map(al => (
-                    <AlertCard key={al.id} alert={al} /* commit-5-stub */ />
+                    <AlertCard key={al.id} alert={al} />
                   ))}
                 </div>
               )}

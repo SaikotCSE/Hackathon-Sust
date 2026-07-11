@@ -10,7 +10,8 @@ const HEALTH_FG: Record<string, string> = {
   normal: "#166534", low: "#854d0e", high: "#9a3412", critical: "#991b1b", unknown: "#374151",
 };
 
-export function AlertCard({ alert, onClick }: { alert: AlertDetail | import("../lib/types").DashboardAlert; onClick?: () => void }) {
+export function AlertCard({ alert, onClick }: { alert: AlertDetail | import("../lib/types").DashboardAlert | undefined | null; onClick?: () => void }) {
+  if (!alert) return null;
   const a = alert as AlertDetail;
   return (
     <Card style={{ cursor: onClick ? "pointer" : "default" }}>

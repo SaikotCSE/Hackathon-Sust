@@ -75,18 +75,55 @@ def _provider_health(balance: float, hours_to_shortage: Optional[float], data_qu
     return "low"
 
 
-def overall_score(balances: Dict[str, float], forecasts: Dict[str, Optional[ForecastSnapshot]]) -> tuple:
-    """0..100. Lower = healthier. Each provider contributes its burn-rate-to-threshold."""
+def overall_score(
+    balances: Dict[str, float],
+    forecasts: Dict[str, Optional[ForecastSnapshot]],
+    data_quality_by_provider: Optional[Dict[str, float]] = None,
+) -> tuple:
+    """0..100. Lower = healthier.
+
+    Each provider contributes its projected health:
+      - balance == 0 → 100 (critical, e-money pool empty)
+      - hours_to_shortage < 0.5h → 95
+      - hours_to_shortage < 2h   → 70
+      - hours_to_shortage < 6h   → 45
+      - hours_to_shortage >= 6h  → 20
+      - no forecast / hours_to_shortage is None → 60 (UNKNOWN, not healthy).
+        We deliberately do NOT default to 90 here: a None forecast means we
+        lack the data to project, not that the provider is healthy. This
+        bug previously caused empty bkash wallets to render as healthy.
+      - data_quality < 0.4 → unknown bucket, contribution 60; we also flag
+        the resulting "no signal" set so the rollup can show data-completeness.
+    """
     if not balances:
         return 80, "no provider data yet"
     score = 0
     weight = 0
     reasons = []
+    no_signal: List[str] = []
     for prov, bal in balances.items():
         fc = forecasts.get(prov)
-        if fc is None or fc.hours_to_shortage is None:
-            score += 90  # healthy bucket
+        dq = (data_quality_by_provider or {}).get(prov, 1.0)
+        # Stale or missing data quality: treat as unknown, not healthy.
+        if dq is not None and dq < 0.4:
+            score += 60
             weight += 1
+            no_signal.append(prov)
+            reasons.append(f"{prov}: data quality {dq:.2f} — projection paused")
+            continue
+        # Empty wallet → critical regardless of forecast.
+        if bal is not None and bal <= 0:
+            score += 100
+            weight += 1
+            reasons.append(f"{prov}: e-money pool empty")
+            continue
+        if fc is None or fc.hours_to_shortage is None:
+            # NOT healthy — we just don't know. Surface as unknown so the
+            # rollup can treat incomplete data differently from healthy.
+            score += 60
+            weight += 1
+            no_signal.append(prov)
+            reasons.append(f"{prov}: no forecast yet")
             continue
         hrs = fc.hours_to_shortage
         if hrs < 0.5:
@@ -130,7 +167,10 @@ def agent_snapshot(session: Session, agent_id: int) -> dict:
 
     forecasts: Dict[str, Optional[ForecastSnapshot]] = {}
     providers_out = []
-    for prov in PROVIDERS:
+    # Iterate providers + physical — physical cash goes through the same
+    # forecast pipeline so the management rollup can show one consistent
+    # overall_score per agent instead of "physical: no forecast yet" tags.
+    for prov in list(PROVIDERS) + ["physical"]:
         fc = session.exec(
             select(ForecastSnapshot)
             .where(ForecastSnapshot.agent_id == agent_id)
@@ -171,7 +211,12 @@ def agent_snapshot(session: Session, agent_id: int) -> dict:
         select(Alert).where(Alert.agent_id == agent_id).order_by(Alert.created_at.desc()).limit(10)
     ).all()
 
-    overall, overall_reason = overall_score(balances, forecasts)
+    dq_by_provider: Dict[str, float] = {
+        p.get("provider"): p.get("data_quality", 1.0)
+        for p in providers_out
+        if isinstance(p, dict) and p.get("provider")
+    }
+    overall, overall_reason = overall_score(balances, forecasts, dq_by_provider)
 
     # ---- Combined / aggregate picture ------------------------------------
     # Single shop's full liquidity = physical cash on the counter + every

@@ -62,19 +62,21 @@ async def escalation_middleware(request: Request, call_next):
     reserved for an authenticated Risk/Compliance analyst via
     POST /alerts/{id}/transition. Do not extend this middleware to make
     case outcomes.
+
+    PERFORMANCE: orchestration (LightGBM + Isolation Forest + alert fusion)
+    is NOT run here — that used to fire on every GET /alerts request,
+    causing a slow page load. Orchestration now runs only when the
+    simulation tick at POST /simulation/tick explicitly invokes it, or
+    when the occasional data-quality event resolves.
     """
     if request.url.path.startswith("/alerts") or request.url.path.startswith("/metrics"):
         try:
             with Session(engine) as s:
-                # Refresh data-quality state once per request
-                dq = {p: data_quality_for(s, p) for p in PROVIDERS}
-                # Re-evaluate orchestration periodically (every 5th call to /alerts)
-                from .services.orchestrator import run_orchestration_cycle
-                if request.url.path.startswith("/alerts") and request.method == "GET":
-                    from .models.database import Agent
-                    agent = s.exec(__import__("sqlmodel").select(Agent).limit(1)).first()
-                    if agent is not None:
-                        run_orchestration_cycle(s, agent.id, providers=list(PROVIDERS), data_quality_by_provider=dq)
+                # Refresh data-quality state once per request — cheap, lets
+                # the read endpoints surface the latest feed health.
+                # Touch the DB so latency_p50/p95 captures middleware cost
+                # even when no alerts are due to escalate.
+                _ = {p: data_quality_for(s, p) for p in PROVIDERS}
                 auto_escalate_due(s, escalation_cfg=_escalation_config())
         except Exception:
             pass

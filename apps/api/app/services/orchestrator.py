@@ -81,8 +81,12 @@ def build_alert_for_provider(
 
     if forecast.hours_to_shortage is not None:
         mins = max(0, int(round(forecast.hours_to_shortage * 60)))
-        if mins < 60:
-            forecast_headline = f"{provider.upper()} may face shortage within {mins} minutes"
+        if mins == 0:
+            # balance is at or below zero already — don't say "within 0 minutes"
+            forecast_headline = f"{provider.upper()} may already be short — verify balance now"
+        elif mins < 60:
+            minute_word = "minute" if mins == 1 else "minutes"
+            forecast_headline = f"{provider.upper()} may face shortage within {mins} {minute_word}"
         else:
             forecast_headline = f"{provider.upper()} may face shortage within {forecast.hours_to_shortage:.1f} hours"
     else:

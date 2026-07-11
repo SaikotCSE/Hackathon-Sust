@@ -224,10 +224,12 @@ function BanglaAlertExample({ alerts }: { alerts: DashboardAlert[] }) {
   };
   const sev_bn = severity_bn[a.severity] ?? a.severity;
   const stat_bn = status_bn[a.status] ?? a.status;
-  // Banglish headline — derived from the live title so numbers match the
-  // English card exactly.
+  // Banglish headline — derived from the live alert so provider name AND
+  // numbers (id, priority, severity, status) all match the English card
+  // above, instead of being hardcoded to "bKash".
+  const provider_bn = (a.provider ?? "").toString().toUpperCase();
   const headline_bn =
-    `bKash প্রোভাইডারে অস্বাভাবিক কার্যকলাপ লক্ষ্য করা গেছে — ` +
+    `${provider_bn} প্রোভাইডারে অস্বাভাবিক কার্যকলাপ লক্ষ্য করা গেছে — ` +
     `পর্যালোচনা প্রয়োজন (Alert #${a.id}, priority ${a.priority_score}/100, ` +
     `severity: ${sev_bn}, status: ${stat_bn}).`;
 

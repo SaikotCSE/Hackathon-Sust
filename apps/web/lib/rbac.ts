@@ -117,9 +117,13 @@ export const ROLE_LABELS: Record<string, string> = {
 
 // Map seed usernames to a friendly "tier" label for the dashboard header.
 export const USERNAME_TIER: Record<string, string> = {
-  field:   "Operations_provider",
+  field:   "Field Officer",
   ops:     "Operations_provider",
 };
+
+export function isProviderOperations(role: string | undefined, username: string | undefined): boolean {
+  return role === "ops" && username === "ops";
+}
 
 export function tierFor(username: string, role: string): string {
   if (role === "ops") return USERNAME_TIER[username] ?? "Operations_provider";

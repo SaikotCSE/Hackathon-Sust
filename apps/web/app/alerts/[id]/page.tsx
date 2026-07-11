@@ -7,6 +7,7 @@ import { Card, Confidence, Disclaimer, PageHeader, SeverityPill, StatusPill } fr
 import { AlertActionStrip } from "../../../components/AlertActionStrip";
 import { usePrincipal } from "../../../components/PrincipalProvider";
 import { RoleGuard } from "../../../components/RoleGuard";
+import { isProviderOperations } from "../../../lib/rbac";
 
 export default function AlertDetailPage() {
   const params = useParams<{ id: string }>();
@@ -14,6 +15,7 @@ export default function AlertDetailPage() {
   const { data, mutate, error } = useSWR(["alert", id], () => client.getAlert(id), { refreshInterval: 15000 });
   const { principal } = usePrincipal();
   const role = (principal?.role ?? "agent") as any;
+  const canCoordinateOperations = isProviderOperations(role, principal?.username);
   const [reviewNote, setReviewNote] = useState("");
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
@@ -124,7 +126,7 @@ export default function AlertDetailPage() {
         </div>
       </Card>
 
-      {data.case?.contacts && (
+      {data.case?.contacts && canCoordinateOperations && (
         <Card style={{ marginBottom: 12 }}>
           <h3 style={{ margin: 0, fontSize: 14 }}>Operations coordination</h3>
           <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>
@@ -139,7 +141,7 @@ export default function AlertDetailPage() {
               </div>
             ))}
           </div>
-          {role === "ops" && data.case.owner_role === "ops" && !["escalated", "closed"].includes(data.case.state) && (
+          {data.case.owner_role === "ops" && !["escalated", "closed"].includes(data.case.state) && (
             <div style={{ marginTop: 12, borderTop: "1px solid #e5e7eb", paddingTop: 10 }}>
               <textarea value={coordinationComment} onChange={e => setCoordinationComment(e.target.value)} maxLength={2000} rows={2} placeholder="Required coordination comment" style={{ width: "100%", boxSizing: "border-box", border: "1px solid #cbd5e1", borderRadius: 6, padding: 8, fontFamily: "inherit" }} />
               <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 7 }}>

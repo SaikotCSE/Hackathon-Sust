@@ -25,6 +25,11 @@ export interface DashboardProvider {
   expected_outflow_next_hours?: number | null;
   current_demand_label?: "low" | "medium" | "high";
   shortage_eta_human?: string;
+  // Degraded-state fields set by the server when this provider's own feed
+  // is stale or has too few samples to project a shortage. The UI must
+  // render these explicitly so a provider never mistakes "—" for "healthy".
+  degraded?: boolean;
+  degraded_reason?: string | null;
 }
 
 export interface DashboardAlert {

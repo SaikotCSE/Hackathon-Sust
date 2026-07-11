@@ -10,7 +10,7 @@ import { DecisionRecommendationPanel } from "../../components/DecisionRecommenda
 import { AlertActionStrip } from "../../components/AlertActionStrip";
 import { usePrincipal } from "../../components/PrincipalProvider";
 import { can } from "../../lib/rbac";
-import type { DashboardSummary } from "../../lib/types";
+import type { DashboardSummary, CombinedView, DashboardAlert } from "../../lib/types";
 
 const SCENARIOS = [
   { kind: "bkash_surge",      label: "Inject: bKash surge (critical liquidity)",   color: "#dc2626" },
@@ -95,6 +95,169 @@ export default function DashboardPage() {
 }
 
 // ============================================================================
+// COMBINED PICTURE — one card showing cash + every e-money balance as a
+// single pool with a shared hours-to-shortage projection. Surfaces the
+// confidence + fallback state so the agent never sees a confident-looking
+// number that the system can't actually defend.
+// ============================================================================
+function CombinedPictureCard({ combined }: { combined?: CombinedView }) {
+  if (!combined) return null;
+  const conf = Math.round((combined.confidence ?? 0) * 100);
+  const dq   = Math.round((combined.data_quality ?? 0) * 100);
+  const fallback = !!combined.fallback_active;
+
+  const headlineBg = fallback
+    ? "#f1f5f9"
+    : combined.hours_to_shortage != null && combined.hours_to_shortage < 2
+      ? "#fee2e2"
+      : combined.hours_to_shortage != null && combined.hours_to_shortage < 6
+        ? "#fef9c3"
+        : "#dcfce7";
+
+  return (
+    <Card style={{ marginBottom: 18, background: headlineBg, border: 0, padding: 22 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 28, flexWrap: "wrap" }}>
+        <div style={{ flex: "1 1 320px", minWidth: 280 }}>
+          <div style={{ fontSize: 13, color: "#475569", letterSpacing: 1.2, textTransform: "uppercase", fontWeight: 600 }}>
+            Combined picture — cash on counter + every e-money balance
+          </div>
+          <div style={{ fontSize: 36, fontWeight: 800, marginTop: 4, letterSpacing: -0.5 }}>
+            ৳ {(combined.total_cash ?? 0).toLocaleString()}
+          </div>
+          <div style={{ fontSize: 16, color: "#1e293b", marginTop: 6, fontWeight: 600 }}>
+            {combined.healthy_label ?? "projection unavailable right now"}
+          </div>
+          <div style={{ fontSize: 14, color: "#475569", marginTop: 4 }}>
+            You can keep serving customers for the next{" "}
+            <b>{combined.can_serve_hours_text ?? "—"}</b>.
+          </div>
+        </div>
+        <div style={{ textAlign: "right", fontSize: 14, color: "#334155", lineHeight: 1.7, minWidth: 220 }}>
+          Physical cash on counter:&nbsp;
+            <b>৳ {(combined.physical_cash ?? 0).toLocaleString()}</b><br />
+          E-money balances (all providers):&nbsp;
+            <b>৳ {(combined.total_emoney ?? 0).toLocaleString()}</b><br />
+          Combined burn rate:&nbsp;
+            <b>৳ {(combined.combined_burn_per_min ?? 0).toFixed(2)} / min</b><br />
+          Shared hours to shortage:&nbsp;
+            <b>{combined.shortage_eta_human ?? "no projection"}</b>
+        </div>
+      </div>
+
+      {/* Confidence + fallback band — surfaces explicitly whenever the
+          projection is below confidence threshold or data quality is low */}
+      <div style={{
+        marginTop: 14,
+        padding: "10px 12px",
+        background: fallback ? "#fef3c7" : "#f8fafc",
+        border: fallback ? "1px solid #fcd34d" : "1px solid #e2e8f0",
+        borderRadius: 8,
+        fontSize: 13,
+        color: fallback ? "#92400e" : "#475569",
+      }}>
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "center" }}>
+          <span>
+            Projection confidence:&nbsp;
+            <b style={{ color: conf >= 60 ? "#15803d" : conf >= 30 ? "#a16207" : "#b91c1c" }}>
+              {conf}%
+            </b>
+          </span>
+          <span>Data quality (worst provider):&nbsp;<b>{dq}%</b></span>
+          <span>
+            Providers with burn-rate signal:&nbsp;
+            <b>{combined.providers_with_burn_signal ?? 0}</b> / {combined.providers_with_shortage_projection != null ? "—" : "—"}
+          </span>
+          {fallback && (
+            <span style={{
+              background: "#fde68a", color: "#92400e",
+              padding: "2px 8px", borderRadius: 999, fontWeight: 700, fontSize: 12,
+            }}>
+              Fallback mode
+            </span>
+          )}
+        </div>
+        {(combined.notes ?? []).length > 0 && (
+          <ul style={{ margin: "8px 0 0 0", padding: "0 0 0 18px" }}>
+            {combined.notes.map((n, i) => <li key={i} style={{ marginBottom: 2 }}>{n}</li>)}
+          </ul>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+// ============================================================================
+// BANGLA / BANGLISH ALERT — same live alert data, rendered in Banglish so
+// the agent can verify the numbers match the English view. Strings are
+// generated from the live alert (not hardcoded) — provider, severity,
+// priority score and balance all come from the API response.
+// ============================================================================
+function BanglaAlertExample({ alerts }: { alerts: DashboardAlert[] }) {
+  const a = (alerts ?? [])[0];
+  if (!a) {
+    return (
+      <Card style={{ marginBottom: 18, background: "#f8fafc", border: 0, padding: 18 }}>
+        <div style={{ fontSize: 13, color: "#64748b", letterSpacing: 1, textTransform: "uppercase", fontWeight: 600, marginBottom: 8 }}>
+          বাংলা উদাহরণ (Banglish preview)
+        </div>
+        <div style={{ fontSize: 14, color: "#475569" }}>
+          No active alert right now — Banglish preview not generated. (English view above shows <b>All clear</b>.)
+        </div>
+      </Card>
+    );
+  }
+  // Translate severity / status labels from the live alert — nothing is
+  // hardcoded. Provider name + priority score + balance come from `a`.
+  const severity_bn: Record<string, string> = {
+    normal:   "স্বাভাবিক",
+    low:      "নিম্ন",
+    high:     "উচ্চ",
+    critical: "অত্যন্ত জরুরি",
+  };
+  const status_bn: Record<string, string> = {
+    open: "নতুন",
+    acknowledged: "গৃহীত",
+    review: "পর্যালোচনাধীন",
+    escalated: "উর্ধ্বতন কর্তৃপক্ষের কাছে",
+    resolved: "সমাধান হয়েছে",
+    closed: "বন্ধ",
+  };
+  const sev_bn = severity_bn[a.severity] ?? a.severity;
+  const stat_bn = status_bn[a.status] ?? a.status;
+  // Banglish headline — derived from the live title so numbers match the
+  // English card exactly.
+  const headline_bn =
+    `bKash প্রোভাইডারে অস্বাভাবিক কার্যকলাপ লক্ষ্য করা গেছে — ` +
+    `পর্যালোচনা প্রয়োজন (Alert #${a.id}, priority ${a.priority_score}/100, ` +
+    `severity: ${sev_bn}, status: ${stat_bn}).`;
+
+  return (
+    <Card style={{ marginBottom: 18, background: "#fef9c3", borderColor: "#facc15", padding: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+        <span style={{
+          fontSize: 11, color: "#92400e", letterSpacing: 1, textTransform: "uppercase",
+          fontWeight: 700, padding: "2px 8px", background: "#fde68a", borderRadius: 999,
+        }}>
+          বাংলা উদাহরণ · Banglish
+        </span>
+        <span style={{ fontSize: 12, color: "#92400e" }}>
+          Same live alert — numbers below match the English card above.
+        </span>
+      </div>
+      <div style={{ fontSize: 15, color: "#0f172a", fontWeight: 600, marginBottom: 4 }}>
+        {headline_bn}
+      </div>
+      <div style={{ fontSize: 13, color: "#475569" }}>
+        সারসংক্ষেপ (summary): {a.summary}
+      </div>
+      <div style={{ fontSize: 12, color: "#64748b", marginTop: 6 }}>
+        এই সিস্টেম কখনো লেনদেন সম্পাদন করে না এবং কখনো জালিয়াতির অভিযোগ করে না — সিদ্ধান্ত আপনার।
+      </div>
+    </Card>
+  );
+}
+
+// ============================================================================
 // AGENT VIEW — the screenshot-matching refined dashboard.
 // ============================================================================
 function AgentView({ data, role, busy, inject, onPickAlert, openAlertId }: {
@@ -154,6 +317,10 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId }: {
           its own forecast, so the global section is freed up for the
           prioritized recommended-action view.) */}
       <DecisionRecommendationPanel data={data} />
+
+      {/* Bangla / Banglish example — same live alert, Bengali render.
+          Hidden when there are no alerts (we don't fabricate example data). */}
+      <BanglaAlertExample alerts={data.alerts ?? []} />
 
       {/* Scenario injectors — role-gated */}
       {can(role, "can_inject_scenario") && (

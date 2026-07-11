@@ -41,6 +41,23 @@ export interface DashboardAlert {
   created_at: string;
 }
 
+export interface CombinedView {
+  total_cash: number;
+  physical_cash: number;
+  total_emoney: number;
+  combined_burn_per_min: number;
+  hours_to_shortage: number | null;
+  shortage_eta_human: string;
+  confidence: number;          // 0..1
+  data_quality: number;        // 0..1 (worst-of the providers)
+  healthy_label: string;       // headline narrative ("comfortable for the next few hours")
+  can_serve_hours_text: string; // "5.4 hours" / "—" / "~30 min"
+  providers_with_burn_signal: number;
+  providers_with_shortage_projection: number;
+  fallback_active: boolean;
+  notes: string[];
+}
+
 export interface DashboardSummary {
   // agent view (existing fields, kept for backwards compatibility)
   agent_id?: number;
@@ -52,6 +69,10 @@ export interface DashboardSummary {
   overall_reason?: string;
   providers?: DashboardProvider[];
   alerts?: DashboardAlert[];
+  // combined / aggregate picture (added so the dashboard can answer
+  // "can I keep serving customers for the next few hours?" without
+  // adding the figures up in the UI)
+  combined?: CombinedView;
   // ops / provider views
   per_agent?: Array<{
     agent_id: number;

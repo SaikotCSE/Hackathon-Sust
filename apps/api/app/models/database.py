@@ -94,7 +94,8 @@ class ForecastSnapshot(SQLModel, table=True):
     provider: str = Field(index=True)
     hours_to_shortage: Optional[float] = None  # None = no projection
     confidence: float
-    reasons_json: str = "[]"  # JSON-encoded list[str]
+    summary: str = ""  # curated one-line basis for UI / alert copy
+    reasons_json: str = "[]"  # JSON-encoded list[str] (technical/audit trail)
     method: str  # "rate_projection" | "rate_projection+lgbm"
     feature_importance_json: str = "{}"
     data_quality: float = 1.0  # 0..1, 1 = healthy
@@ -237,6 +238,7 @@ class ProviderSnapshot(SQLModel):
     burn_rate_per_min: float
     hours_to_shortage: Optional[float]
     forecast_confidence: float
+    forecast_summary: str = ""  # curated one-line basis for the UI / alert copy
     forecast_reasons: List[str]
     data_quality: float
     history: List[float]  # last N balances for sparkline

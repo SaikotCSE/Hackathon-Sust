@@ -187,11 +187,14 @@ class SimulationEngine:
         if any(s["kind"] == "structuring" for s in active):
             return ("bkash", "cash_out", random.choice([4950, 4970, 5000, 5030, 5050]),
                     random.choice(self.counterparties))
-        # Default normal flow — roughly proportional to provider health
-        provider = random.choices(
-            list(PROVIDERS),
-            weights=[balances.get(p, 1.0) for p in PROVIDERS],
-        )[0]
+        # Default normal flow — roughly proportional to provider health.
+        # Clamp to a tiny positive floor so all-zero balances (every
+        # provider depleted) don't crash random.choices with
+        # "Total of weights must be greater than zero". Once a balance
+        # is recovered a tick or two later, normal weighted sampling
+        # resumes.
+        weights = [max(float(balances.get(p, 0.0) or 0.0), 0.01) for p in PROVIDERS]
+        provider = random.choices(list(PROVIDERS), weights=weights)[0]  # fmt:skip
         tx_type = random.choices(["cash_in", "cash_out"], weights=[0.45, 0.55])[0]
         amount = random.choice([
             random.randint(200, 1500),

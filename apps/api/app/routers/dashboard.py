@@ -15,9 +15,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from ..db import get_session
-from ..models.database import Agent, Alert
+from ..models.database import Agent, Alert, BalanceHistory
 from ..services.auth import Principal, current_principal
+from ..services.liquidity import rate_projection
 from ..services.snapshots import agent_snapshot
+from ..simulation.engine import PROVIDERS
 
 
 router = APIRouter(tags=["dashboard"])
@@ -182,3 +184,47 @@ def dashboard(
     # Unknown role — fall back to a single agent view, but don't leak data
     snap = agent_snapshot(session, 1) or {}
     return {"view": "agent", "scope": {"agent_id": 1}, **snap, "principal": principal_block}
+
+
+@router.get("/dashboard/series")
+def dashboard_series(
+    agent_id: int = 1,
+    provider: Optional[str] = None,
+    limit: int = 60,
+    principal: Principal = Depends(current_principal),
+    session: Session = Depends(get_session),
+):
+    """Chart-ready history for the agent dashboard.
+
+    Returns ordered `(ts, balance)` points per provider (oldest → newest) plus
+    the current burn rate (BDT/min) so the UI can draw a depletion projection.
+    The provider wall is enforced here too — a 'provider' role only sees their
+    own column. Refreshes whenever SWR re-fires on the dashboard.
+    """
+    # RBAC: agents only see their own agent_id
+    if principal.role == "agent" and principal.agent_id and agent_id != principal.agent_id:
+        raise HTTPException(status_code=403, detail="Agent principals see only their own shop.")
+
+    # Provider-wall: a 'provider' principal can only query their own provider's column.
+    if principal.role == "provider" and principal.provider:
+        provider = principal.provider
+
+    chosen = [provider] if provider else list(PROVIDERS)
+    out = []
+    for prov in chosen:
+        rows = session.exec(
+            select(BalanceHistory)
+            .where(BalanceHistory.agent_id == agent_id)
+            .where(BalanceHistory.provider == prov)
+            .order_by(BalanceHistory.ts.asc())
+            .limit(limit)
+        ).all()
+        rp = rate_projection(session, agent_id, prov)
+        out.append({
+            "provider": prov,
+            "points": [{"ts": r.ts.isoformat(), "balance": r.balance} for r in rows],
+            "burn_rate_per_min": rp.burn_rate_per_min,
+            "hours_to_shortage": rp.hours_to_shortage,
+            "confidence": rp.confidence,
+        })
+    return {"agent_id": agent_id, "series": out}

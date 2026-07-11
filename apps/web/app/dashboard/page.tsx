@@ -488,6 +488,10 @@ function RiskView({ data }: { data: DashboardSummary }) {
 function ProviderView({ data }: { data: DashboardSummary }) {
   const list = data.per_agent ?? [];
   const prov = data.scope?.provider;
+  // Defense-in-depth: even if the server forgets to scrub, refuse to render
+  // anything that doesn't match the principal's provider.
+  const onlyOwn = (provs?: { provider?: string }[]) =>
+    (provs ?? []).filter(p => p && p.provider === prov);
   return (
     <>
       <Card style={{ marginBottom: 16, background: "#faf5ff", borderColor: "#ddd6fe" }}>
@@ -501,7 +505,10 @@ function ProviderView({ data }: { data: DashboardSummary }) {
       </Card>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         {list.map(a => {
-          const myCol = (a.providers ?? []).find(p => p.provider === prov);
+          // Combined pool block is cross-provider by definition — drop it.
+          // Aligned with server-side enforcement.
+          const myCol = onlyOwn(a.providers)[0] ?? null;
+          const myAlerts = (a.alerts ?? []).filter(al => al?.provider === prov);
           return (
             <Card key={a.agent_id}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -519,6 +526,15 @@ function ProviderView({ data }: { data: DashboardSummary }) {
               {myCol && (
                 <div style={{ marginTop: 10 }}>
                   <ProviderLiquidityCard p={myCol} />
+                </div>
+              )}
+              {/* In-card alert list is provider-scoped on the server; we
+                  re-filter here as a backstop. */}
+              {myAlerts.length > 0 && (
+                <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {myAlerts.map(al => (
+                    <AlertCard key={al.id} a={al as any} />
+                  ))}
                 </div>
               )}
             </Card>

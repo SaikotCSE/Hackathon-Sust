@@ -192,6 +192,7 @@ def rule_timing_anomaly(session: Session, agent_id: int, provider: str) -> Optio
 # ---------------------------------------------------------------------------
 
 _IFOREST_CACHE: Dict[Tuple[int, str], Dict] = {}
+_IFOREST_CACHE_TTL_SECONDS = 60
 
 
 def _iforest_enabled() -> bool:
@@ -212,6 +213,20 @@ def iforest_score(session: Session, agent_id: int, provider: str, hits: List[Rul
     if len(txs) < 12:
         # Below the 10–15 minimum-sample floor — let rule heads carry the alert.
         return None
+
+    # Cache key includes a coarse fingerprint of the input window so that a
+    # burst of fresh transactions invalidates the cached fit, but a stable
+    # 30-minute window can reuse it.
+    _fingerprint = (len(txs), int(txs[-1].ts.timestamp()) // 60)
+    cache_key = (agent_id, provider)
+    now = datetime.utcnow()
+    cached = _IFOREST_CACHE.get(cache_key)
+    if (
+        cached is not None
+        and cached.get("fingerprint") == _fingerprint
+        and (now - cached["trained_at"]).total_seconds() < _IFOREST_CACHE_TTL_SECONDS
+    ):
+        return cached["score"]
 
     try:
         import numpy as np
@@ -234,8 +249,13 @@ def iforest_score(session: Session, agent_id: int, provider: str, hits: List[Rul
     except Exception:
         return None
 
-    # squash into 0..1
-    return max(0.0, min(1.0, 1.0 - 1.0 / (1.0 + anomaly_score)))
+    score = max(0.0, min(1.0, 1.0 - 1.0 / (1.0 + anomaly_score)))
+    _IFOREST_CACHE[cache_key] = {
+        "fingerprint": _fingerprint,
+        "trained_at": now,
+        "score": score,
+    }
+    return score
 
 
 # ---------------------------------------------------------------------------

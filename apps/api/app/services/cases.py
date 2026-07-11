@@ -8,7 +8,7 @@ Implements the state machine from the brief as a real, enforced flow:
           ↓
     Acknowledged
           ↓
-    Area Manager Review
+    Under Operational Review (Provider Operations / Network Coordination)
           ↓
     Resolved  ──OR──  Escalated to Risk Team → Compliance Decision → Closed
 

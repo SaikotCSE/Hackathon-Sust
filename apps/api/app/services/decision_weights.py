@@ -200,8 +200,7 @@ def _owner_for(initial_owner: str, severity: str) -> Tuple[str, str]:
         return "ops", "Provider Operations / Network Coordination (initial triage)"
     # liquidity
     if severity == "critical":
-        return "ops", "Provider Operations / Network Coordination (area-manager tier)"
-    return "ops", "Provider Operations / Network Coordination"
+        return "ops", "Provider Operations / Network Coordination"
 
 
 def _fused_explanation(

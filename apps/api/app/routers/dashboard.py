@@ -25,14 +25,125 @@ from ..simulation.engine import PROVIDERS
 router = APIRouter(tags=["dashboard"])
 
 
+# Fields inside a per-provider block that another provider must NOT see.
+# Each is either money, a derived metric about another provider's wallet, or
+# a forecast reasoning chain. Keeping the columns but nulling them is a leak;
+# we drop the whole block instead so the UI can't accidentally render a stale
+# row of zeros as 'that provider is empty'.
+_OTHER_PROVIDER_NUMERIC_FIELDS = (
+    "balance",
+    "history",
+    "burn_rate_per_min",
+    "hours_to_shortage",
+    "forecast_confidence",
+    "health",
+    "data_quality",
+    "expected_outflow_next_hours",
+    "current_demand_label",
+    "shortage_eta_human",
+    "recent_deltas",
+    "forecast_reasons",
+)
+
+
 def _enforce_provider_wall(snap: dict, principal: Principal) -> None:
-    if not snap.get("providers"):
+    """Hard scope a per-agent snapshot to ``principal.provider`` only.
+
+    For a Financial Service Provider principal we must never expose another
+    provider's balances, burn rate, hours-to-shortage, or alerts. The earlier
+    implementation only nulled a few fields and left the cross-provider
+    numerics visible (combined pool, other-provider blocks, free-text reason
+    strings, embedded alert list). This implementation rebuilds the snapshot
+    from the principal's own column and drops everything else.
+    """
+    if principal.role != "provider" or not principal.provider:
         return
-    for prov_block in snap["providers"]:
-        if principal.role == "provider" and principal.provider and prov_block["provider"] != principal.provider:
-            prov_block["balance"] = None
-            prov_block["history"] = []
-            prov_block["forecast_reasons"] = []
+    if not isinstance(snap, dict):
+        return
+
+    own_provider = principal.provider
+
+    # ---- per-provider blocks: keep only the principal's own column ------------
+    own_block = None
+    if isinstance(snap.get("providers"), list):
+        for prov_block in snap["providers"]:
+            if not isinstance(prov_block, dict):
+                continue
+            if prov_block.get("provider") == own_provider:
+                own_block = prov_block
+        snap["providers"] = [own_block] if own_block else []
+
+    # ---- combined pool block: fundamentally cross-provider; drop entirely. ---
+    snap.pop("combined", None)
+
+    # ---- physical cash belongs to the agent's drawer, not to a provider.
+    # A provider principal never needs the cross-agent cash figure, so we
+    # drop it from the snapshot rather than leak the agent's drawer amount.
+    snap.pop("physical_cash", None)
+
+    # ---- overall_reason free-text: rewrite if it names another provider or
+    # contains fragments like 'rocket: ~0m to shortage'. We only know how to
+    # produce a provider-scoped reason from the principal's own block.
+    reason = snap.get("overall_reason") or ""
+    if own_block is not None:
+        hrs = own_block.get("hours_to_shortage")
+        if hrs is None:
+            own_reason = "your provider's projection is currently unavailable"
+        elif hrs < 0.5:
+            own_reason = f"your provider has pressure in ~{int(round(hrs * 60))} min"
+        elif hrs < 2:
+            own_reason = f"your provider has pressure in {hrs:.1f} h"
+        else:
+            own_reason = "your provider is within a healthy band"
+        snap["overall_reason"] = own_reason
+    else:
+        snap["overall_reason"] = (
+            "your provider's data is not currently being delivered to this agent"
+        )
+    # Strip any leftover cross-provider names that may have slipped into
+    # reasons built upstream — defense in depth.
+    for other in PROVIDERS:
+        if other == own_provider:
+            continue
+        if other and other in reason:
+            snap["overall_reason"] = (
+                "your provider's projection is currently unavailable"
+            )
+            break
+
+    # ---- embedded alerts: filter to the principal's provider only ----------
+    own_alerts = []
+    for a in snap.get("alerts", []) or []:
+        if isinstance(a, dict) and a.get("provider") == own_provider:
+            own_alerts.append(a)
+    snap["alerts"] = own_alerts
+
+    # ---- degraded-state signalling for the principal's own block ----------
+    # A provider principal needs to know when THEIR feed is poor — otherwise
+    # they'd render 'hours_to_shortage = None' as healthy without realizing
+    # it's a feed problem. Surface explicit degraded flag + reason so the
+    # frontend can render 'feed degraded — wait for data' instead of a number.
+    if own_block is not None:
+        try:
+            dq = float(own_block.get("data_quality") or 0.0)
+        except (TypeError, ValueError):
+            dq = 0.0
+        sample_count = len(own_block.get("history") or [])
+        if dq < 0.6:
+            own_block["hours_to_shortage"] = None
+            own_block["shortage_eta_human"] = "feed stale — projection paused"
+            own_block["degraded"] = True
+            own_block["degraded_reason"] = f"data_quality {dq:.2f} below 0.60 threshold"
+        elif sample_count < 5:
+            own_block["hours_to_shortage"] = None
+            own_block["shortage_eta_human"] = "not enough samples yet"
+            own_block["degraded"] = True
+            own_block["degraded_reason"] = (
+                f"only {sample_count} history points — need at least 5"
+            )
+        else:
+            own_block["degraded"] = False
+            own_block["degraded_reason"] = None
 
 
 @router.get("/dashboard")

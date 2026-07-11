@@ -69,28 +69,49 @@ export function ProviderLiquidityCard({
 
   const history = p.history ?? [];
   const isWalled = p.balance == null && history.length === 0;
+    const degraded = !!p.degraded;
+    // Server-supplied eta text already says "feed stale — projection paused"
+    // when degraded, so the projected-pressure block renders that explicitly.
+    const etaText = p.shortage_eta_human ?? (degraded ? "feed degraded — wait for data" : "—");
 
-  return (
-    <Card style={{
-      background: balBg,
-      borderColor: p.health === "critical" ? "#fecaca" : p.health === "high" ? "#fed7aa" : "#e5e7eb",
-      position: "relative",
-      padding: 18,
-    }}>
-      {/* Header row */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ width: 14, height: 14, borderRadius: 999, background: meta.dot, display: "inline-block" }} />
-          <div style={{ fontWeight: 700, fontSize: 20 }}>{meta.title}</div>
+    return (
+      <Card style={{
+        background: balBg,
+        borderColor: p.health === "critical" ? "#fecaca" : p.health === "high" ? "#fed7aa" : "#e5e7eb",
+        position: "relative",
+        padding: 18,
+      }}>
+        {/* Header row */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ width: 14, height: 14, borderRadius: 999, background: meta.dot, display: "inline-block" }} />
+            <div style={{ fontWeight: 700, fontSize: 20 }}>{meta.title}</div>
+          </div>
+          <span style={{
+            background: HEALTH_BG[p.health] ?? HEALTH_BG.unknown,
+            color: HEALTH_FG[p.health] ?? HEALTH_FG.unknown,
+            padding: "5px 14px", borderRadius: 999, fontSize: 14, fontWeight: 700,
+          }}>{tierForHealth.label}</span>
         </div>
-        <span style={{
-          background: HEALTH_BG[p.health] ?? HEALTH_BG.unknown,
-          color: HEALTH_FG[p.health] ?? HEALTH_FG.unknown,
-          padding: "5px 14px", borderRadius: 999, fontSize: 14, fontWeight: 700,
-        }}>{tierForHealth.label}</span>
-      </div>
 
-      {/* Data quality line */}
+        {/* Degraded-state badge: explicit, server-driven. Renders above the
+            data quality line so it's the first thing the eye catches when
+            this provider's feed is bad. */}
+        {degraded && (
+          <div style={{
+            marginTop: 10,
+            padding: "6px 10px",
+            background: "#fef3c7",
+            color: "#92400e",
+            border: "1px solid #fcd34d",
+            borderRadius: 8,
+            fontSize: 13,
+            fontWeight: 600,
+          }}>
+            ⚠ Feed degraded — projection paused
+            {p.degraded_reason ? <span style={{ fontWeight: 400, marginLeft: 6 }}>({p.degraded_reason})</span> : null}
+          </div>
+        )}
       <div style={{ fontSize: 14, color: "#64748b", marginTop: 8 }}>
         {p.data_quality < 0.7
           ? <span style={{ color: "#dc2626", fontWeight: 600 }}>Data quality degraded ({Math.round(p.data_quality * 100)}%)</span>
@@ -152,9 +173,9 @@ export function ProviderLiquidityCard({
           Projected Service Pressure
         </div>
         <div style={{ marginTop: 8, fontSize: 16 }}>
-          Estimated {p.provider === "physical" ? "cash" : `${meta.short} balance`} shortage in{" "}
-          <b style={{ color: tierForHealth.color }}>{p.shortage_eta_human ?? "—"}</b>.
-        </div>
+            Estimated {p.provider === "physical" ? "cash" : `${meta.short} balance`} shortage in{" "}
+            <b style={{ color: degraded ? "#92400e" : tierForHealth.color }}>{etaText}</b>.
+          </div>
         <div style={{ fontSize: 13, color: "#64748b", marginTop: 6 }}>
           based on {p.provider === "physical"
             ? `shared cash drawer drawdown over ~${Math.max(1, Math.round(history.length / 2))} hours`

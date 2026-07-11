@@ -260,7 +260,6 @@ def seed_if_empty(session: Session) -> Agent:
         ("agent",     "agent",     "Multi-Provider Agent",         None),
         ("ops",       "ops",       "Provider Operations",          None),
         ("field",     "ops",       "Field Officer (Ops tier)",     None),
-        ("manager",   "ops",       "Area Manager (Ops tier)",      None),
         ("risk",      "risk",      "Risk / Compliance Analyst",    None),
         ("provider_bkash",  "provider", "bKash Provider View",   "bkash"),
         ("provider_nagad",  "provider", "Nagad Provider View",   "nagad"),

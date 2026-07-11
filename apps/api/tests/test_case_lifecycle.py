@@ -202,6 +202,15 @@ class CaseLifecycleTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as denied:
                 coordinate_case(self.alert_id, {"action": "notify_agent", "comment": "attempt"}, agent, session)
             self.assertEqual(denied.exception.status_code, 403)
+            field_officer = Principal("field", "Field Officer", "ops", None, "Dhaka")
+            with self.assertRaises(HTTPException) as denied_field:
+                coordinate_case(
+                    self.alert_id,
+                    {"action": "request_field_verification", "comment": "attempt"},
+                    field_officer,
+                    session,
+                )
+            self.assertEqual(denied_field.exception.status_code, 403)
 
     def test_note_persists_escalation_changes_owner_and_provider_wall_holds(self):
         with Session(self.engine) as session:

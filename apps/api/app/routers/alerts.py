@@ -278,7 +278,7 @@ def coordinate_case(
     session: Session = Depends(get_session),
 ):
     """Record a safe Operations coordination action; never changes balances."""
-    if principal.role != "ops":
+    if principal.role != "ops" or principal.username != "ops":
         raise HTTPException(403, "only Provider Operations / Network Coordination may coordinate this case")
     alert = session.get(Alert, alert_id)
     if alert is None:

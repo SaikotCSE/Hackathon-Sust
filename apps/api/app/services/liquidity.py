@@ -16,6 +16,12 @@ from sqlmodel import Session, select
 
 from ..models.database import BalanceHistory, ForecastSnapshot
 
+# LightGBM model cache TTL — retrain at most once per this many seconds
+# even if new balance_history rows arrive. The model is fit on a 60-min
+# burn-rate proxy, so refreshing every minute matches the signal window.
+# Was 0 (effectively invalidated on every snapshot row → retrain every tick).
+_LGBM_CACHE_TTL_SECONDS = 60
+
 
 # ---------------------------------------------------------------------------
 # Primary: depletion-rate projection (always available)
@@ -47,12 +53,17 @@ def rate_projection(
     window_start = now - timedelta(minutes=window)
 
     # Use balance-history points and aggregate outflows from BalanceHistory deltas.
+    # Capped at the rolling window + a safety ceiling — without the cap a
+    # provider that has been ticking for hours would load tens of thousands
+    # of rows every time the dashboard polls.
+    _RATE_PROJ_HISTORY_LIMIT = 120
     history = session.exec(
         select(BalanceHistory)
         .where(BalanceHistory.agent_id == agent_id)
         .where(BalanceHistory.provider == provider)
         .where(BalanceHistory.ts >= window_start)
         .order_by(BalanceHistory.ts)
+        .limit(_RATE_PROJ_HISTORY_LIMIT)
     ).all()
 
     # Cold-start fallback: if the rolling window is empty but we *do* have
@@ -65,6 +76,7 @@ def rate_projection(
             .where(BalanceHistory.agent_id == agent_id)
             .where(BalanceHistory.provider == provider)
             .order_by(BalanceHistory.ts)
+            .limit(_RATE_PROJ_HISTORY_LIMIT)
         ).all()
         if len(all_history) >= 3:
             history = all_history
@@ -248,12 +260,22 @@ def lgbm_predict(
     if not _lgbm_enabled():
         return _lgbm_suppressed("lightgbm not installed")
 
+    # Cap to the most recent N rows: enough history to fit a meaningful
+    # model without loading the entire balance_history table per call.
+    # Was unbounded — could load tens of thousands of rows after a long
+    # demo session.
+    _LGBM_HISTORY_LIMIT = 200
     snapshots = session.exec(
         select(BalanceHistory)
         .where(BalanceHistory.agent_id == agent_id)
         .where(BalanceHistory.provider == provider)
-        .order_by(BalanceHistory.ts)
+        .order_by(BalanceHistory.ts.desc())
+        .limit(_LGBM_HISTORY_LIMIT)
     ).all()
+    # Reverse to chronological order (oldest → newest) for the feature
+    # builder below — the limit above gives us newest → newest, the
+    # reversal keeps `points[i-1] ↔ points[i]` math intuitive.
+    snapshots = list(reversed(snapshots))
 
     if len(snapshots) < 8:
         return _lgbm_suppressed(f"only {len(snapshots)} snapshots — need ~8 for a fit")
@@ -301,8 +323,26 @@ def lgbm_predict(
                      "balance_ratio_to_max", "is_bkash", "is_nagad", "is_rocket"]
 
     cache_key = (agent_id, provider)
+    now = datetime.utcnow()
     model_entry = _LGBM_CACHE.get(cache_key)
-    if model_entry is None or model_entry["n"] != len(snapshots):
+    # Refresh the cached model when:
+    #   - no entry exists, OR
+    #   - the cache TTL has elapsed (every 60s by default — the model is fit
+    #     on a 60-min burn-rate proxy anyway), OR
+    #   - the snapshot count crossed the 20-snapshot tier boundary (cold
+    #     start → warmed). Without this check, a provider stuck at 12
+    #     snapshots would never refresh past the lightweight params even if
+    #     we later configured a different model.
+    cache_stale = (
+        model_entry is None
+        or (now - model_entry["trained_at"]).total_seconds() > _LGBM_CACHE_TTL_SECONDS
+        or (
+            # tier boundary crossing: light (n<20) ↔ full (n>=20)
+            (model_entry["n"] < 20 and len(snapshots) >= 20)
+            or (model_entry["n"] >= 20 and len(snapshots) < 20)
+        )
+    )
+    if cache_stale:
         # Lighter model for the smaller training set: shallower trees, fewer
         # leaves, more aggressive min_data_in_leaf to avoid overfitting to
         # 8–19 noisy points.
@@ -335,6 +375,7 @@ def lgbm_predict(
             "importance": dict(zip(feature_names, [float(x) for x in importance])),
             "n": len(snapshots),
             "n_features": len(feats),
+            "trained_at": now,
         }
         _LGBM_CACHE[cache_key] = model_entry
 

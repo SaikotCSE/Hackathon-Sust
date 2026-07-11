@@ -26,7 +26,7 @@ export default function DashboardPage() {
   const { data, mutate, error, isLoading } = useSWR<DashboardSummary>(
     ["dashboard", principal?.username],
     () => client.getDashboard().then(d => d as unknown as DashboardSummary),
-    { refreshInterval: 5000 }
+    { refreshInterval: 15000 }
   );
   const [busy, setBusy] = useState<string | null>(null);
   const [openAlertId, setOpenAlertId] = useState<number | null>(null);
@@ -275,7 +275,7 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId, onActio
   const { data: open } = useSWR(
     openAlertId ? ["alert", openAlertId] : null,
     () => client.getAlert(openAlertId as number),
-    { refreshInterval: 5000 }
+    { refreshInterval: 15000 }
   );
 
   const providers = (data.providers ?? []).filter(p => p.provider !== "physical");

@@ -122,12 +122,19 @@ def dashboard(
             "principal": principal_block,
         }
 
-    # ----- Operations / Network Coordination: agents in their area
+    # ----- Operations / Network Coordination: agents in their area.
+    # Area names are hierarchical (e.g. "Dhaka" covers "Dhaka-Mirpur",
+    # "Dhaka-Gulshan"); we match on a "starts-with" relationship rather
+    # than an exact string so seeded sub-areas show up under the ops user.
     if role == "ops":
         area = principal.area
         agents_q = select(Agent)
         if area:
-            agents_q = agents_q.where(Agent.area == area)
+            agents_q = agents_q.where(
+                (Agent.area == area)
+                | Agent.area.startswith(f"{area}-")
+                | Agent.area.startswith(f"{area} ")
+            )
         agents = session.exec(agents_q.order_by(Agent.id)).all()
         per_agent = [agent_snapshot(session, a.id) for a in agents]
         per_agent = [s for s in per_agent if s]

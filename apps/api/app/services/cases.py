@@ -133,7 +133,15 @@ def transition(session: Session, t: CaseTransition) -> Case:
 # ---------------------------------------------------------------------------
 
 def auto_escalate_due(session: Session, *, escalation_cfg: dict) -> List[Case]:
-    """Find every Case whose alert is still unacknowledged past the tier's timer."""
+    """Re-route unacknowledged alerts whose SLA timer has elapsed.
+
+    SAFETY: this function performs *routing only*. It MUST NOT resolve or close
+    a case, and MUST NOT decide an outcome on a customer — the final compliance
+    ruling is the analyst's. The only state-machine transition this can fire
+    is `escalated` (re-routing from `open` to `escalated` after the SLA
+    timer). Anything that changes a terminal state (`resolved`, `closed`,
+    `compliance_decision`) belongs to a human via POST /alerts/{id}/transition.
+    """
     now = datetime.utcnow()
     crit = (escalation_cfg or {}).get("critical_minutes") or 10
     high = (escalation_cfg or {}).get("high_minutes") or 30
@@ -154,10 +162,16 @@ def auto_escalate_due(session: Session, *, escalation_cfg: dict) -> List[Case]:
         try:
             transition(session, CaseTransition(
                 case_id=case.id,
+                # Hard-coded to "escalate" — re-routing only.
+                # Do not add other actions here; see the docstring above.
                 action="escalate",
                 actor_role="system",
                 actor_user="escalation-engine",
-                note=f"auto-escalated after {threshold} min unacknowledged ({a.severity} tier)",
+                note=(
+                    f"auto-routed to risk queue after {threshold} min "
+                    f"unacknowledged ({a.severity} tier). Routing-only — "
+                    f"does not decide an outcome."
+                ),
             ))
             escalated.append(case)
         except ValueError:

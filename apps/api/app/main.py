@@ -54,7 +54,15 @@ app.add_middleware(
 @app.middleware("http")
 async def escalation_middleware(request: Request, call_next):
     """Cheap background task: before each request, fire any due escalations.
-    Real product would put this on a scheduler, not a middleware."""
+    Real product would put this on a scheduler, not a middleware.
+
+    SAFETY: this middleware performs *routing only* (auto_escalate_due flips
+    alert status from `open` to `escalated` after the SLA timer). It does
+    not resolve, close, or otherwise decide outcomes on cases — that is
+    reserved for an authenticated Risk/Compliance analyst via
+    POST /alerts/{id}/transition. Do not extend this middleware to make
+    case outcomes.
+    """
     if request.url.path.startswith("/alerts") or request.url.path.startswith("/metrics"):
         try:
             with Session(engine) as s:

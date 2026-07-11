@@ -85,7 +85,7 @@ export default function DashboardPage() {
       {error && <div style={{ color: "#dc2626" }}>API error: {String(error)}</div>}
       {isLoading && !data && <div>Loading…</div>}
 
-      {data?.view === "agent"      && <AgentView      data={data} role={role} busy={busy} inject={inject} onPickAlert={setOpenAlertId} openAlertId={openAlertId} />}
+      {data?.view === "agent"      && <AgentView      data={data} role={role} busy={busy} inject={inject} onPickAlert={setOpenAlertId} openAlertId={openAlertId} onActionTaken={() => { void mutate(); }} />}
       {data?.view === "ops"        && <OpsView        data={data} onSelectAgent={() => mutate()} />}
       {data?.view === "risk"       && <RiskView       data={data} />}
       {data?.view === "provider"   && <ProviderView   data={data} />}
@@ -262,11 +262,15 @@ function BanglaAlertExample({ alerts }: { alerts: DashboardAlert[] }) {
 // ============================================================================
 // AGENT VIEW — the screenshot-matching refined dashboard.
 // ============================================================================
-function AgentView({ data, role, busy, inject, onPickAlert, openAlertId }: {
+function AgentView({ data, role, busy, inject, onPickAlert, openAlertId, onActionTaken }: {
   data: DashboardSummary; role: string; busy: string | null;
   inject: (k: string, p?: string) => void;
   onPickAlert: (id: number | null) => void;
   openAlertId: number | null;
+  // Refresh callback fired when the user takes a recommended action from
+  // the Decision Intelligence panel — re-fetches the dashboard summary so
+  // the case state change + any re-fusion of signals show up immediately.
+  onActionTaken?: () => void;
 }) {
   const { data: open } = useSWR(
     openAlertId ? ["alert", openAlertId] : null,
@@ -317,8 +321,10 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId }: {
       {/* Decision Intelligence — what should I do next? (replaces the
           Forward-Looking Forecast panel: every provider card now carries
           its own forecast, so the global section is freed up for the
-          prioritized recommended-action view.) */}
-      <DecisionRecommendationPanel data={data} />
+          prioritized recommended-action view.)
+          onActionTaken refreshes SWR so the case state change and any
+          resulting re-fusion show up immediately. */}
+      <DecisionRecommendationPanel data={data} onActionTaken={onActionTaken} />
 
       {/* Bangla / Banglish example — same live alert, Bengali render.
           Hidden when there are no alerts (we don't fabricate example data). */}

@@ -1,7 +1,11 @@
 "use client";
-import React from "react";
+import React, { useMemo, useState } from "react";
 import type { DashboardAlert, DashboardProvider, DashboardSummary } from "../lib/types";
 import { Card } from "./Primitives";
+import { client } from "../lib/client";
+import { usePrincipal } from "./PrincipalProvider";
+import { canPerformRecommendedAction } from "../lib/rbac";
+import type { RecommendedActionKey } from "../lib/client";
 
 const CLOSED_STATUSES = new Set<DashboardAlert["status"]>(["resolved", "closed"]);
 
@@ -38,6 +42,7 @@ function sevFg(s?: string) { return SEV_FG[s ?? "normal"] ?? SEV_FG.normal; }
  */
 function pickTopRecommendation(d: DashboardSummary): {
   kind: "alert" | "liquidity" | "clear";
+  alertId?: number;
   severity?: string;
   priorityScore?: number;
   provider?: string | null;
@@ -56,6 +61,7 @@ function pickTopRecommendation(d: DashboardSummary): {
   if (top) {
     return {
       kind: "alert",
+      alertId: top.id,
       severity: top.severity,
       priorityScore: top.priority_score,
       provider: top.provider,
@@ -160,11 +166,59 @@ function deriveOwner(rec: ReturnType<typeof pickTopRecommendation>): { role: str
   return { role: "—", label: "—" };
 }
 
-export function DecisionRecommendationPanel({ data }: { data: DashboardSummary }) {
+export function DecisionRecommendationPanel({
+  data,
+  onActionTaken,
+}: {
+  data: DashboardSummary;
+  onActionTaken?: () => void;
+}) {
+  const { principal } = usePrincipal();
+  const role = (principal?.role ?? "agent") as string;
   const rec = pickTopRecommendation(data);
   const actions = deriveActions(rec);
   const owner = deriveOwner(rec);
   const conf = Math.round((rec.confidence ?? 0.95) * 100);
+
+  // Filter the recommended actions by the principal's role. The full list
+  // is still computed (so we can show the "you can't fire this" hint for
+  // actions restricted to ops/risk), but only role-allowed actions get a
+  // real button.
+  const allowedActionKeys = useMemo(
+    () => new Set(actions.filter(a => canPerformRecommendedAction(role, a.key)).map(a => a.key)),
+    [actions, role],
+  );
+
+  const [busy, setBusy] = useState<RecommendedActionKey | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionOk, setActionOk] = useState<RecommendedActionKey | null>(null);
+
+  async function fireAction(actionKey: RecommendedActionKey) {
+    if (rec.kind !== "alert" || !rec.alertId) return;
+    setBusy(actionKey);
+    setActionError(null);
+    setActionOk(null);
+    try {
+      await client.executeRecommendedAction(rec.alertId, actionKey);
+      setActionOk(actionKey);
+      onActionTaken?.();
+    } catch (e: any) {
+      // The client throws raw `API <status> <path>: <body>` strings. Strip
+      // that prefix and turn the server's plain HTTPException detail into a
+      // human-friendly sentence — the panel surfaces recommendations, not
+      // raw stack traces.
+      const raw = String(e?.message || e);
+      const m = raw.match(/^API\s+\d+\s+[^:]+:\s*(.*)$/);
+      const detail = m ? m[1].replace(/^"|"$/g, "") : raw;
+      const friendly =
+        /Illegal transition/i.test(detail)
+          ? `This action isn't applicable to the case in its current state (${rec.kind === "alert" ? "see case state" : "no alert"}). The case may have already moved on — try another recommendation.`
+          : detail;
+      setActionError(friendly);
+    } finally {
+      setBusy(null);
+    }
+  }
 
   // Count backup signals for the "why this is the top recommendation" line.
   const openAlerts = (data.alerts ?? []).filter(a => !CLOSED_STATUSES.has(a.status));
@@ -264,6 +318,11 @@ export function DecisionRecommendationPanel({ data }: { data: DashboardSummary }
               label: a.label, color: "#475569", hint: "", icon: "•",
             };
             const isTop = i === 0;
+            const allowed = allowedActionKeys.has(a.key);
+            const canFire = allowed && rec.kind === "alert" && !!rec.alertId;
+            const justFired = actionOk === a.key;
+            const isBusy = busy === a.key;
+            const ownerForAction = roleOwnerFor(a.key);
             return (
               <div key={a.key} style={{
                 background: isTop ? "#f8fafc" : "#fff",
@@ -289,6 +348,48 @@ export function DecisionRecommendationPanel({ data }: { data: DashboardSummary }
                 <div style={{ fontSize: 14, color: "#475569", marginTop: 6, lineHeight: 1.45 }}>
                   {meta.hint}
                 </div>
+
+                {/* Inline action button — only fires if the principal's role
+                    is allowed AND we have an Alert to act on. For restricted
+                    actions we surface a "why" hint so the user understands
+                    the recommendation exists but isn't theirs to take. */}
+                <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    onClick={() => fireAction(a.key as RecommendedActionKey)}
+                    disabled={!canFire || isBusy}
+                    title={
+                      canFire
+                        ? meta.hint
+                        : rec.kind !== "alert"
+                          ? "No open alert to act on."
+                          : `${role} cannot ${meta.label.toLowerCase()}${ownerForAction ? ` — restricted to ${ownerForAction}` : ""}`
+                    }
+                    style={{
+                      background: canFire ? meta.color : "#e5e7eb",
+                      color: canFire ? "#fff" : "#94a3b8",
+                      border: 0, borderRadius: 6,
+                      padding: "6px 12px", fontSize: 13, fontWeight: 600,
+                      cursor: canFire ? "pointer" : "not-allowed",
+                      opacity: isBusy ? 0.7 : 1,
+                    }}
+                  >
+                    {isBusy
+                      ? "Recording…"
+                      : justFired
+                        ? "✓ Logged"
+                        : canFire
+                          ? `Take action: ${meta.label}`
+                          : `${meta.label} · restricted`}
+                  </button>
+                  {!allowed && (
+                    <span style={{ fontSize: 12, color: "#94a3b8" }}>
+                      {ownerForAction
+                        ? `Only ${ownerForAction} can take this action.`
+                        : `Your role (${role}) cannot take this action.`}
+                    </span>
+                  )}
+                </div>
+
                 {isTop && (
                   <div style={{
                     position: "absolute", top: -8, right: 12,
@@ -303,10 +404,37 @@ export function DecisionRecommendationPanel({ data }: { data: DashboardSummary }
             );
           })}
         </div>
+        {actionError && (
+          <div style={{ marginTop: 10, color: "#dc2626", fontSize: 13 }}>
+            {actionError}
+          </div>
+        )}
         <div style={{ fontSize: 13, color: "#94a3b8", marginTop: 10, fontStyle: "italic" }}>
           We surface recommendations — humans decide. No transactions are executed automatically.
         </div>
       </div>
     </Card>
   );
+}
+
+// Maps each recommended action key to the role(s) authorized to take it, so
+// the panel can show "Only Provider Operations can take this action" hints
+// to users whose role is restricted. Mirrors apps/web/lib/rbac.ts.
+function roleOwnerFor(actionKey: string): string {
+  switch (actionKey) {
+    case "notify_ops":
+      return "Agent / Ops / Risk";
+    case "assign_field_officer":
+      return "Provider Operations / Network Coordination";
+    case "request_cash_support":
+      return "Provider Operations / Network Coordination";
+    case "risk_review":
+      return "Agent / Ops / Risk";
+    case "data_quality_followup":
+      return "Provider / Ops / Risk";
+    case "monitor":
+      return "";
+    default:
+      return "";
+  }
 }

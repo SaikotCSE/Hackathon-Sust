@@ -27,11 +27,22 @@ export interface InjectRequest {
   duration_minutes?: number;
 }
 
+// The six recommended-action keys surfaced in the Decision Intelligence
+// panel. Mirrors config/decision-weights.json — keep in sync.
+export type RecommendedActionKey =
+  | "notify_ops"
+  | "assign_field_officer"
+  | "request_cash_support"
+  | "monitor"
+  | "risk_review"
+  | "data_quality_followup";
+
 export interface DataClient {
   getDashboard(agentId?: number): Promise<DashboardSummary>;
   getAlerts(opts?: { status?: string; severity?: string }): Promise<AlertsList>;
   getAlert(id: number): Promise<AlertDetail>;
   transitionAlert(id: number, action: "ack" | "review" | "resolve" | "escalate" | "decision" | "close", note?: string): Promise<AlertDetail>;
+  executeRecommendedAction(id: number, actionKey: RecommendedActionKey, note?: string): Promise<AlertDetail>;
   tickSimulation(req?: TickRequest): Promise<TickResult>;
   injectScenario(req: InjectRequest): Promise<ScenarioResult>;
   resolveDataQuality(provider: string): Promise<{ resolved: number; provider: string }>;
@@ -51,7 +62,16 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const user = typeof window !== "undefined" ? window.localStorage.getItem("sa_user") || "agent" : "agent";
   headers.set("X-User", user);
-  const res = await fetch(`${BASE}${path}`, { ...init, headers });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, { ...init, headers });
+  } catch (e: any) {
+    // fetch() rejects with TypeError on network failure, CORS rejection,
+    // or when the server kills the connection mid-response. Surface a
+    // single friendly message instead of letting raw `Failed to fetch`
+    // propagate into the UI stack.
+    throw new Error(`Network error contacting ${BASE}${path}: ${e?.message || e}. Is the API running on ${BASE}?`);
+  }
   if (!res.ok) throw new Error(`API ${res.status} ${path}: ${await res.text()}`);
   return res.json() as Promise<T>;
 }
@@ -70,6 +90,11 @@ export const apiClient: DataClient = {
     http(`/alerts/${id}/transition`, {
       method: "POST",
       body: JSON.stringify({ action, note: note || "" }),
+    }),
+  executeRecommendedAction: (id, actionKey, note) =>
+    http(`/alerts/${id}/action`, {
+      method: "POST",
+      body: JSON.stringify({ action_key: actionKey, note: note || "" }),
     }),
   tickSimulation: () => http(`/simulation/tick`, { method: "POST", body: "{}" }),
   injectScenario: (req) =>

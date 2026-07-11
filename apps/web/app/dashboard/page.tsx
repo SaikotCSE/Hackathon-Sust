@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import useSWR from "swr";
 import { client } from "../../lib/client";
 import { Card, Disclaimer, PageHeader } from "../../components/Primitives";
@@ -12,6 +12,17 @@ import { usePrincipal } from "../../components/PrincipalProvider";
 import { can } from "../../lib/rbac";
 import type { DashboardSummary, CombinedView, DashboardAlert } from "../../lib/types";
 
+// Read `?agent_id=` from the URL on the client. The agent view must
+// refetch when this changes (e.g. an ops user clicking through to an
+// agent's detail page). On the server `window` is undefined so we fall
+// back to 1 — same default the API uses.
+function readAgentIdFromUrl(): number {
+  if (typeof window === "undefined") return 1;
+  const raw = new URLSearchParams(window.location.search).get("agent_id");
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
 const SCENARIOS = [
   { kind: "bkash_surge",      label: "Inject: bKash surge (critical liquidity)",   color: "#dc2626" },
   { kind: "repeated_amount",  label: "Inject: Repeated amounts (anomaly)",         color: "#7c3aed" },
@@ -23,9 +34,46 @@ const SCENARIOS = [
 export default function DashboardPage() {
   const { principal } = usePrincipal();
   const role = principal?.role ?? "agent";
+
+  // Track the `?agent_id=` from the URL in state so the SWR key changes
+  // and the cache invalidates as soon as the user navigates to a
+  // different agent (e.g. from the ops list). We also re-read on each
+  // render so deep-links work after a hard refresh.
+  const [urlAgentId, setUrlAgentId] = useState<number>(() => readAgentIdFromUrl());
+  useEffect(() => {
+    const sync = () => setUrlAgentId(readAgentIdFromUrl());
+    sync();
+    window.addEventListener("popstate", sync);
+    // The ops list uses <a href="?agent_id=..."> which triggers a same-tab
+    // navigation but NOT a popstate — patch pushState/replaceState to fire.
+    const origPush = window.history.pushState;
+    const origReplace = window.history.replaceState;
+    window.history.pushState = function (...args) {
+      const r = origPush.apply(this, args as any);
+      sync();
+      return r;
+    };
+    window.history.replaceState = function (...args) {
+      const r = origReplace.apply(this, args as any);
+      sync();
+      return r;
+    };
+    return () => {
+      window.removeEventListener("popstate", sync);
+      window.history.pushState = origPush;
+      window.history.replaceState = origReplace;
+    };
+  }, []);
+
+  // Cache key MUST include role + agent_id, not just username. If two
+  // different roles pick the same username, or the same user flips
+  // between agent and ops, SWR would otherwise return the previous
+  // shape (stale agent view → slow apparent switch).
+  const cacheKey = ["dashboard", principal?.username ?? null, role, urlAgentId];
+
   const { data, mutate, error, isLoading } = useSWR<DashboardSummary>(
-    ["dashboard", principal?.username],
-    () => client.getDashboard().then(d => d as unknown as DashboardSummary),
+    cacheKey,
+    () => client.getDashboard(urlAgentId).then(d => d as unknown as DashboardSummary),
     { refreshInterval: 15000 }
   );
   const [busy, setBusy] = useState<string | null>(null);

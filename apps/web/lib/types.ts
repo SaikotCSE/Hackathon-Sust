@@ -17,6 +17,7 @@ export interface DashboardProvider {
   burn_rate_per_min: number;
   hours_to_shortage: number | null;
   forecast_confidence: number;
+  forecast_summary?: string;
   forecast_reasons: string[];
   data_quality: number;
   history: number[];

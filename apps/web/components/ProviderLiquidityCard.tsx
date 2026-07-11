@@ -2,6 +2,7 @@
 import React from "react";
 import type { DashboardProvider } from "../lib/types";
 import { Card } from "./Primitives";
+import { ForecastTimeline } from "./ForecastTimeline";
 
 const PROVIDER_STYLE: Record<string, { dot: string; title: string; subtitle: string; short: string }> = {
   physical: { dot: "#1e293b", title: "Physical Cash",  subtitle: "Shared drawer for this outlet", short: "Physical" },
@@ -63,16 +64,11 @@ export function ProviderLiquidityCard({
     p.health === "high"     ? "#ffedd5" :
     p.health === "low"      ? "#fef9c3" :
                               "#fff";
-  const conf = Math.round((p.forecast_confidence ?? 0) * 100);
-  const confColor = conf >= 80 ? "#16a34a" : conf >= 55 ? "#ca8a04" : "#dc2626";
   const demand = demandLabelColor(p.current_demand_label);
 
   const history = p.history ?? [];
   const isWalled = p.balance == null && history.length === 0;
     const degraded = !!p.degraded;
-    // Server-supplied eta text already says "feed stale — projection paused"
-    // when degraded, so the projected-pressure block renders that explicitly.
-    const etaText = p.shortage_eta_human ?? (degraded ? "feed degraded — wait for data" : "—");
 
     return (
       <Card style={{
@@ -167,34 +163,30 @@ export function ProviderLiquidityCard({
         </div>
       </div>
 
-      {/* Projected service pressure — forecast lives here, per card */}
-      <div style={{ marginTop: 16, fontSize: 14, color: "#0f172a" }}>
-        <div style={{ color: "#64748b", fontSize: 12, textTransform: "uppercase", letterSpacing: 1, fontWeight: 600 }}>
+      {/* Projected service pressure — visual forecast lives here */}
+      <div style={{ marginTop: 18 }}>
+        <div
+          style={{
+            color: "#64748b",
+            fontSize: 12,
+            textTransform: "uppercase",
+            letterSpacing: 1,
+            fontWeight: 600,
+            marginBottom: 6,
+          }}
+        >
           Projected Service Pressure
         </div>
-        <div style={{ marginTop: 8, fontSize: 16 }}>
-            Estimated {p.provider === "physical" ? "cash" : `${meta.short} balance`} shortage in{" "}
-            <b style={{ color: degraded ? "#92400e" : tierForHealth.color }}>{etaText}</b>.
-          </div>
-        <div style={{ fontSize: 13, color: "#64748b", marginTop: 6 }}>
-          based on {p.provider === "physical"
-            ? `shared cash drawer drawdown over ~${Math.max(1, Math.round(history.length / 2))} hours`
-            : `the last ${Math.max(1, history.length)} intervals' average outflow rate`}
-        </div>
-      </div>
-
-      {/* Confidence */}
-      <div style={{ marginTop: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#475569", fontWeight: 600 }}>
-          <span>Confidence Score</span>
-          <span style={{ color: confColor, fontWeight: 700 }}>{conf}%</span>
-        </div>
-        <div style={{ height: 10, background: "#e5e7eb", borderRadius: 999, marginTop: 8, overflow: "hidden" }}>
-          <div style={{ width: `${conf}%`, height: "100%", background: confColor }} />
-        </div>
-        <div style={{ fontSize: 13, color: "#64748b", marginTop: 8 }}>
-          Confidence reflects recent trend stability and {p.provider === "physical" ? "shared cash drawer" : "provider"} data quality.
-        </div>
+        <ForecastTimeline
+          providerKey={p.provider}
+          burnRatePerMin={p.burn_rate_per_min}
+          hoursToShortage={p.hours_to_shortage}
+          forecastSummary={p.forecast_summary}
+          forecastReasons={p.forecast_reasons}
+          history={history}
+          degraded={degraded}
+          degradedReason={p.degraded_reason ?? null}
+        />
       </div>
     </Card>
   );

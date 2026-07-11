@@ -117,11 +117,18 @@ def transition_case(
     if action in ("ack", "review", "escalate", "resolve") and principal.role not in ("agent", "ops", "risk"):
         raise HTTPException(403, f"{principal.role} cannot {action} alerts.")
 
-    case = do_transition(session, CaseTransition(
-        case_id=case.id, action=action,
-        actor_role=principal.role, actor_user=principal.username,
-        note=note,
-    ))
+    try:
+        case = do_transition(session, CaseTransition(
+            case_id=case.id, action=action,
+            actor_role=principal.role, actor_user=principal.username,
+            note=note,
+        ))
+    except ValueError as e:
+        # State-machine violations are client errors (409 Conflict), not
+        # server faults. The brief case-flow is the source of truth — UI
+        # buttons respect it, but a hand-crafted request should also get
+        # a clean HTTP code, not a 500.
+        raise HTTPException(409, str(e))
     a = session.get(Alert, alert_id)
     out = _serialize_alert(a)
     out["case"] = {

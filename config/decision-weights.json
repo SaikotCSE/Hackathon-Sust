@@ -1,0 +1,38 @@
+{
+  "$schema": "../docs/decision-weights.schema.md",
+  "_comment": "Decision Intelligence Engine (Module 4) fusion weights. Loaded at startup; can be reloaded via POST /config/reload. All weights are normalized at runtime so the absolute scale is flexible — only the relative shape matters.",
+  "default": {
+    "liquidityForecastWeight": 0.35,
+    "anomalyWeight": 0.25,
+    "customerImpactWeight": 0.20,
+    "confidenceWeight": 0.10,
+    "dataQualityWeight": 0.10
+  },
+  "overrides": {
+    "bkash":  { "liquidityForecastWeight": 0.40, "anomalyWeight": 0.25, "customerImpactWeight": 0.20, "confidenceWeight": 0.10, "dataQualityWeight": 0.05 },
+    "nagad":  { "liquidityForecastWeight": 0.45, "anomalyWeight": 0.20, "customerImpactWeight": 0.20, "confidenceWeight": 0.10, "dataQualityWeight": 0.05 },
+    "rocket": { "liquidityForecastWeight": 0.30, "anomalyWeight": 0.30, "customerImpactWeight": 0.20, "confidenceWeight": 0.10, "dataQualityWeight": 0.10 }
+  },
+  "_tier_thresholds": {
+    "_comment": "Priority score → tier mapping used by Module 5 rendering and Module 4 Priority Scoring.",
+    "normal":   [0, 30],
+    "low":      [31, 60],
+    "high":     [61, 80],
+    "critical": [81, 100]
+  },
+  "_escalation": {
+    "_comment": "Minutes unacknowledged before auto-escalation. Module 4 Escalation Engine.",
+    "critical_minutes": 10,
+    "high_minutes": 30,
+    "low_minutes": null,
+    "normal_minutes": null
+  },
+  "_actions": [
+    { "key": "notify_ops",          "label": "Notify Operations",          "weight": 0.97 },
+    { "key": "assign_field_officer","label": "Assign Field Officer",        "weight": 0.94 },
+    { "key": "request_cash_support","label": "Request Cash Support",        "weight": 0.90 },
+    { "key": "monitor",             "label": "Monitor",                     "weight": 0.72 },
+    { "key": "risk_review",         "label": "Risk Review",                 "weight": 0.68 },
+    { "key": "data_quality_followup","label": "Follow up with provider feed","weight": 0.55 }
+  ]
+}

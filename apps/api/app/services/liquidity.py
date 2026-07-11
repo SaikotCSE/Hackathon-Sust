@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from statistics import pstdev
+from statistics import median, pstdev
 from typing import Deque, Dict, List, Optional, Tuple
 
 from sqlmodel import Session, select
@@ -62,60 +62,106 @@ def rate_projection(
         .where(BalanceHistory.agent_id == agent_id)
         .where(BalanceHistory.provider == provider)
         .where(BalanceHistory.ts >= window_start)
-        .order_by(BalanceHistory.ts)
+        .order_by(BalanceHistory.ts.desc())
         .limit(_RATE_PROJ_HISTORY_LIMIT)
     ).all()
+    history = list(reversed(history))
 
     # Cold-start fallback: if the rolling window is empty but we *do* have
     # samples since the agent first started, use that window instead of
     # returning nothing. This avoids the "confidence 30% not enough history"
     # state on a freshly-ticked provider that just hasn't accumulated 60 min yet.
-    if len(history) < 3:
+    if len(history) < 5:
         all_history = session.exec(
             select(BalanceHistory)
             .where(BalanceHistory.agent_id == agent_id)
             .where(BalanceHistory.provider == provider)
-            .order_by(BalanceHistory.ts)
+            .order_by(BalanceHistory.ts.desc())
             .limit(_RATE_PROJ_HISTORY_LIMIT)
         ).all()
-        if len(all_history) >= 3:
+        all_history = list(reversed(all_history))
+        if len(all_history) >= 5:
             history = all_history
             window = max(1, int((history[-1].ts - history[0].ts).total_seconds() / 60))
 
-    if len(history) < 3:
+    if len(history) < 5:
         return RateProjection(
             hours_to_shortage=None,
-            confidence=0.45,
+            confidence=0.0,
             burn_rate_per_min=0.0,
             variance=0.0,
-            reasons=["warming up — first few samples arriving, projection in ~1 min"],
-            summary="warming up",
+            reasons=[f"insufficient data — only {len(history)} samples; need at least 5"],
+            summary="insufficient data — projection unavailable",
             window_minutes=window,
         )
 
-    # Compute the deltas between consecutive history points (cash-out equivalents: drops)
-    points: List[Tuple[datetime, float]] = [(h.ts, h.balance) for h in history]
-    drops: List[float] = []
-    per_min_rates: List[float] = []
-    # Sub-minute intervals indicate the simulator wrote multiple history points
-    # inside one logical minute (e.g. several ticks per second). Clamping intervals
-    # to a sane minimum prevents 1-second intervals from producing astronomical
-    # burn rates — without this guard, a single outlier second dominates the
-    # whole 60-minute window.
-    MIN_INTERVAL_MIN = 0.5
-    for i in range(1, len(points)):
-        prev_ts, prev_bal = points[i - 1]
-        cur_ts, cur_bal = points[i]
-        mins = max(MIN_INTERVAL_MIN, (cur_ts - prev_ts).total_seconds() / 60.0)
-        delta = prev_bal - cur_bal  # positive = outflow
-        # Negative deltas are inflows (cash-in / commission). For *shortage* projection
-        # we treat inflows as a pause in burn — clip to 0.
-        if delta > 0:
-            per_min_rates.append(delta / mins)
-        else:
-            per_min_rates.append(0.0)
+    # Collapse exact duplicate timestamps. Different balances at the same instant
+    # are contradictory observations, not an ultra-fast drain signal.
+    grouped: Dict[datetime, List[float]] = defaultdict(list)
+    for h in history:
+        grouped[h.ts].append(float(h.balance))
+    conflict_times = [ts for ts, vals in grouped.items() if max(vals) - min(vals) > max(1.0, median(vals) * 0.01)]
+    # A single old overlap (for example an hourly and minute seed landing on
+    # the same boundary) is recoverable: discard it and lower confidence. A
+    # conflicted latest observation or a materially conflicted feed is not.
+    if conflict_times and (max(conflict_times) == max(grouped) or len(conflict_times) / len(grouped) >= 0.2):
+        return RateProjection(
+            hours_to_shortage=None, confidence=0.0, burn_rate_per_min=0.0,
+            variance=0.0,
+            reasons=[f"conflicting data — {len(conflict_times)} timestamp(s) report different balances"],
+            summary="conflicting data — projection paused", window_minutes=window,
+        )
+    points: List[Tuple[datetime, float]] = sorted(
+        ((ts, sum(vals) / len(vals)) for ts, vals in grouped.items() if ts not in conflict_times), key=lambda p: p[0]
+    )
+    if len(points) < 5:
+        return RateProjection(None, 0.0, 0.0, 0.0,
+                              ["insufficient distinct timestamps to estimate a trend"],
+                              "insufficient data — projection unavailable", window)
 
-    if not per_min_rates or sum(per_min_rates) <= 0:
+    intervals = [(points[i][0] - points[i - 1][0]).total_seconds() / 60.0 for i in range(1, len(points))]
+    if any(v <= 0 for v in intervals):
+        return RateProjection(None, 0.0, 0.0, 0.0, ["timestamps are not strictly increasing"],
+                              "conflicting data — projection paused", window)
+    typical_interval = median(intervals)
+    age_min = max(0.0, (now - points[-1][0]).total_seconds() / 60.0)
+    stale_after = max(5.0, typical_interval * 3.0)
+    if age_min > stale_after:
+        return RateProjection(None, 0.0, 0.0, 0.0,
+                              [f"latest balance is {age_min:.0f} min old — feed is stale"],
+                              "stale data — projection paused", window)
+    span_min = (points[-1][0] - points[0][0]).total_seconds() / 60.0
+    if span_min < 3.0:
+        return RateProjection(None, 0.2, 0.0, 0.0,
+                              [f"insufficient time span — {span_min:.1f} min observed; need at least 3 min"],
+                              "insufficient data — projection unavailable", window)
+
+    def trend(sample: List[Tuple[datetime, float]]) -> Tuple[float, float, float]:
+        """Return net burn/min, residual stddev and R² from a balance trend."""
+        origin = sample[0][0]
+        xs = [(ts - origin).total_seconds() / 60.0 for ts, _ in sample]
+        ys = [bal for _, bal in sample]
+        xbar, ybar = sum(xs) / len(xs), sum(ys) / len(ys)
+        denom = sum((x - xbar) ** 2 for x in xs)
+        slope = sum((x - xbar) * (y - ybar) for x, y in zip(xs, ys)) / max(denom, 1e-9)
+        fitted = [ybar + slope * (x - xbar) for x in xs]
+        residuals = [y - fit for y, fit in zip(ys, fitted)]
+        residual_sd = pstdev(residuals) if len(residuals) > 1 else 0.0
+        total_ss = sum((y - ybar) ** 2 for y in ys)
+        residual_ss = sum(r * r for r in residuals)
+        r2 = 1.0 - residual_ss / total_ss if total_ss > 1e-9 else 1.0
+        return max(0.0, -slope), residual_sd, max(0.0, min(1.0, r2))
+
+    avg_rate, variance, r2 = trend(points)
+    recent = [p for p in points if (points[-1][0] - p[0]).total_seconds() <= 15 * 60]
+    if len(recent) >= 5 and (recent[-1][0] - recent[0][0]).total_seconds() >= 3 * 60:
+        recent_rate, recent_variance, recent_r2 = trend(recent)
+        # React to a sustained sudden drain instead of hiding it in an hour average.
+        if recent_rate > avg_rate * 1.5 and recent_r2 >= 0.5:
+            avg_rate, variance, r2 = recent_rate, recent_variance, recent_r2
+            window = max(3, int((recent[-1][0] - recent[0][0]).total_seconds() / 60.0))
+
+    if avg_rate <= 1e-9:
         # "No outflow" is a *good* state, not a low-confidence one. We are
         # confident the wallet is not draining — say so, and surface a high
         # confidence in "stable". A future negative delta will lower this.
@@ -130,26 +176,12 @@ def rate_projection(
             window_minutes=window,
         )
 
-    # Outlier-resistant estimator: a single anomaly-injected huge outflow
-    # in the window (e.g. 100,000 BDT in one minute) would otherwise
-    # dominate the naive mean and project "~0 min to shortage" for a wallet
-    # that actually still has hours of buffer. Use median + cap, and use
-    # pstdev on the capped series so the confidence score reflects the
-    # burn rate the agent actually experiences.
-    sorted_rates = sorted(per_min_rates)
-    median_rate = sorted_rates[len(sorted_rates) // 2]
-    # Cap any per-minute rate at 10x the median — anything beyond that is
-    # almost certainly an anomaly event, not normal customer traffic.
-    BURN_CAP_MULTIPLIER = 10.0
-    cap = max(median_rate * BURN_CAP_MULTIPLIER, 1.0)
-    capped_rates = [min(r, cap) for r in per_min_rates]
-    avg_rate = sum(capped_rates) / len(capped_rates)
-    variance = pstdev(capped_rates) if len(capped_rates) > 1 else 0.0
-    cv = (variance / avg_rate) if avg_rate > 0 else 1.0
-    # tighter variance ⇒ higher confidence.
-    # Floor raised to 0.55: a real burn signal that ran for ≥3 minutes
-    # is meaningful, even if noisy. Ceiling kept at 0.95.
-    confidence = max(0.55, min(0.95, 0.95 - min(0.40, cv)))
+    expected_count = max(1.0, span_min / max(typical_interval, 1e-6) + 1.0)
+    coverage = min(1.0, len(points) / expected_count)
+    large_gaps = sum(1 for gap in intervals if gap > typical_interval * 3.0)
+    confidence = min(0.95, max(0.2, 0.35 + 0.45 * r2 + 0.15 * coverage))
+    confidence *= max(0.4, 1.0 - large_gaps * 0.12)
+    confidence *= max(0.5, 1.0 - len(conflict_times) * 0.15)
 
     last_balance = points[-1][1]
     if last_balance <= 0:
@@ -168,11 +200,10 @@ def rate_projection(
 
     # ---- Reasons (technical) ----
     reasons: List[str] = []
-    n_capped = sum(1 for r in per_min_rates if r > cap)
-    if n_capped > 0:
-        reasons.append(
-            f"capped {n_capped} outlier minute(s) above {cap:.0f} BDT/min to keep the projection honest"
-        )
+    if large_gaps:
+        reasons.append(f"reduced confidence for {large_gaps} missing/late interval(s)")
+    if conflict_times:
+        reasons.append(f"reduced confidence after discarding {len(conflict_times)} conflicting timestamp(s)")
     if avg_rate > 0:
         reasons.append(f"average burn rate {avg_rate:.0f} BDT/min over the last {window} min")
     if last_balance < 15_000:
@@ -193,7 +224,7 @@ def rate_projection(
         confidence=confidence,
         burn_rate_per_min=avg_rate,
         variance=variance,
-        reasons=reasons or [f"balance {last_balance:,.0f} BDT, burn {avg_rate:.0f} BDT/min"],
+        reasons=reasons or [f"balance {last_balance:,.0f} BDT, net burn {avg_rate:.0f} BDT/min"],
         summary=summary,
         window_minutes=window,
     )
@@ -300,7 +331,7 @@ def lgbm_predict(
     window = 5
     for i in range(window, len(snapshots) - 1):
         prev = balances[i] - balances[i - window]
-        recent_rates = [max(0.0, balances[j] - balances[j - 1]) for j in range(max(1, i - window), i)]
+        recent_rates = [max(0.0, balances[j - 1] - balances[j]) for j in range(max(1, i - window), i)]
         var = float(np.var(recent_rates)) if recent_rates else 0.0
         v = sum(recent_rates) / max(1, len(recent_rates))
         cur_bal = balances[i]
@@ -447,6 +478,12 @@ def compute_forecast(
     reasons = list(primary.reasons)
     importance: Dict[str, float] = {}
 
+    if data_quality < 0.5:
+        hours = None
+        conf = min(conf, 0.2) * max(data_quality, 0.0)
+        reasons.append(f"projection withheld — data quality {data_quality:.2f} is below safe threshold")
+        primary.summary = "feed degraded — projection unavailable"
+
     lgbm_suppressed = (lgbm.feature_importance.get("_suppressed", 0.0) >= 1.0)
     if not lgbm_suppressed and lgbm.hours_to_shortage is not None and hours is not None:
         # Agreement check — be tolerant because LightGBM is fitted on noisy demo data.
@@ -489,16 +526,25 @@ def compute_forecast(
     else:
         dq_penalty = 0.5  # floor — already short-circuited upstream
 
+    final_confidence = conf * dq_penalty
+    if hours is not None and hours > 0 and final_confidence < 0.5:
+        reasons.append(
+            f"depletion time withheld — confidence {final_confidence:.2f} is below the 0.50 decision threshold"
+        )
+        hours = None
+        primary.summary = "low-confidence trend — monitor until more data arrives"
+
     snap = ForecastSnapshot(
         agent_id=agent_id,
         provider=provider,
         hours_to_shortage=hours,
-        confidence=conf * dq_penalty,
+        confidence=final_confidence,
         summary=primary.summary,  # curated one-line basis for UI / alert copy
         reasons_json=json.dumps(reasons),
         method=method,
         feature_importance_json=json.dumps(importance),
         data_quality=data_quality,
+        burn_rate_per_min=primary.burn_rate_per_min,
     )
     session.add(snap)
     session.commit()

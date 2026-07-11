@@ -47,25 +47,31 @@ class MetricsSnapshot:
 # ---------------------------------------------------------------------------
 
 def _pr_metrics(scenario_events: List[ScenarioEvent], anomaly_events: List[AnomalyEvent]) -> tuple:
-    truth_pos = {s.id for s in scenario_events if s.is_anomaly_ground_truth}
-    detected_agencies: List[int] = []
-    for a in anomaly_events:
-        # Match any anomaly event to the most-recent ground-truth scenario of the same provider
-        for s in scenario_events[::-1]:
-            if s.provider == a.provider:
-                detected_agencies.append(s.id)
-                break
+    # Score at scenario level (not event level): several rule heads may fire for
+    # one injected case and must not be counted as several independent guesses.
+    tp = fp = fn = normal_total = 0
+    for scenario in scenario_events:
+        duration = max(1, int(getattr(scenario, "duration_minutes", 5) or 5))
+        end = scenario.injected_at + timedelta(minutes=duration)
+        detected = any(
+            event.agent_id == scenario.agent_id
+            and event.provider == scenario.provider
+            and scenario.injected_at <= event.ts <= end
+            for event in anomaly_events
+        )
+        if scenario.is_anomaly_ground_truth:
+            if detected:
+                tp += 1
+            else:
+                fn += 1
+        else:
+            normal_total += 1
+            if detected:
+                fp += 1
 
-    tp = sum(1 for s in detected_agencies if s in truth_pos)
-    fp = len(detected_agencies) - tp
-    fn = len(truth_pos) - tp
-
-    # Tolerate trivial division-by-zero
-    precision = tp / (tp + fp) if (tp + fp) > 0 else (1.0 if not truth_pos else 0.0)
+    precision = tp / (tp + fp) if (tp + fp) > 0 else (1.0 if (tp + fn) == 0 else 0.0)
     recall = tp / (tp + fn) if (tp + fn) > 0 else 1.0
-
-    total_alerts = tp + fp
-    fpr = fp / total_alerts if total_alerts > 0 else 0.0
+    fpr = fp / normal_total if normal_total > 0 else 0.0
     return precision, recall, fpr
 
 
@@ -110,7 +116,9 @@ def _liquidity_mae_and_lead(session: Session, scenarios: List[ScenarioEvent]) ->
         predicted_min = first_forecast.hours_to_shortage * 60.0
         actual_min = (actual.ts - first_forecast.ts).total_seconds() / 60.0
         diffs.append(abs(predicted_min - actual_min))
-        leads.append(predicted_min)  # lead time = how early we sounded the alarm
+        # Detection lead time is the wall-clock warning interval, independent
+        # of whether the ETA itself was accurate.
+        leads.append(actual_min)
     mae = mean(diffs) if diffs else 0.0
     lead = mean(leads) if leads else 0.0
     return mae, lead
@@ -213,9 +221,14 @@ def compute_metrics(session: Session) -> MetricsSnapshot:
     conf_delta = _confidence_delta(session)
     priority_align = _priority_alignment(scenarios, alerts)
 
-    # Explanation coverage: alerts that have non-empty reasons + confidence
+    # Explanation coverage: reason + record/source evidence + uncertainty.
     if alerts:
-        covered = sum(1 for a in alerts if a.reasons_json and a.reasons_json != "[]" and a.confidence > 0)
+        covered = sum(
+            1 for a in alerts
+            if a.reasons_json and a.reasons_json != "[]"
+            and a.evidence_json and a.evidence_json != "[]"
+            and a.confidence is not None and 0.0 <= a.confidence <= 1.0
+        )
         coverage = covered / len(alerts)
     else:
         coverage = 1.0

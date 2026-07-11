@@ -23,6 +23,7 @@ from ..models.database import (
 from ..services.auth import Principal, current_principal
 from ..services.metrics import record_api_latency
 from ..services.orchestrator import run_orchestration_cycle
+from ..services.cases import process_due_escalations
 from ..services.seed import seed_if_empty
 from ..simulation.engine import PROVIDERS, ScenarioSpec, SimulationEngine, data_quality_for, resolve_open_data_quality
 
@@ -36,7 +37,11 @@ def tick(
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ):
+    if principal.role not in ("agent", "ops"):
+        raise HTTPException(403, "only agents and Operations may advance the simulated outlet")
     agent = seed_if_empty(session)
+    if principal.role == "agent" and principal.agent_id != agent.id:
+        raise HTTPException(403, "agents may advance only their own simulated outlet")
     started = time.time()
     engine = SimulationEngine(session, agent.id)
     engine.tick(n_transactions=n_transactions)
@@ -48,6 +53,11 @@ def tick(
     new_alerts = run_orchestration_cycle(
         session, agent.id, providers=list(PROVIDERS), data_quality_by_provider=dq,
     )
+    escalated_cases = process_due_escalations(session)
+    # Physical cash has no provider anomaly stream, but it must receive a fresh
+    # forecast on every tick just like the e-money wallets.
+    from ..services.liquidity import compute_forecast
+    compute_forecast(session, agent.id, "physical", data_quality=1.0)
 
     elapsed_ms = (time.time() - started) * 1000.0
     record_api_latency(session, elapsed_ms)
@@ -55,6 +65,7 @@ def tick(
         "ticked": n_transactions,
         "new_alerts": [{"id": a.id, "severity": a.severity, "title": a.title, "provider": a.provider}
                        for a in new_alerts],
+        "escalated_cases": escalated_cases,
         "data_quality": dq,
         "latency_ms": elapsed_ms,
     }
@@ -67,9 +78,11 @@ def inject(
     session: Session = Depends(get_session),
 ):
     """Inject a what-if scenario — the demo debug panel calls this."""
-    if principal.role not in ("agent", "ops", "management"):
-        raise HTTPException(403, "only agent / ops / management can inject scenarios in the prototype")
+    if principal.role not in ("agent", "ops"):
+        raise HTTPException(403, "only agents and Operations can inject prototype scenarios")
     agent = seed_if_empty(session)
+    if principal.role == "agent" and principal.agent_id != agent.id:
+        raise HTTPException(403, "agents may inject scenarios only for their own outlet")
     kind = payload.get("kind")
     label = payload.get("label", kind)
     provider = payload.get("provider")
@@ -115,6 +128,10 @@ def resolve_dq(
     session: Session = Depends(get_session),
 ):
     provider = payload.get("provider", "rocket")
+    if principal.role == "provider" and principal.provider != provider:
+        raise HTTPException(403, "provider wall — not your provider feed")
+    if principal.role not in ("provider", "ops"):
+        raise HTTPException(403, "only the feed owner or Operations may resolve a feed issue")
     n = resolve_open_data_quality(session, provider)
     return {"resolved": n, "provider": provider}
 
@@ -124,7 +141,12 @@ def list_scenarios(
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ):
-    rows = session.exec(select(ScenarioEvent).order_by(ScenarioEvent.injected_at.desc()).limit(50)).all()
+    q = select(ScenarioEvent)
+    if principal.role == "provider":
+        q = q.where(ScenarioEvent.provider == principal.provider)
+    elif principal.role == "agent":
+        q = q.where(ScenarioEvent.agent_id == principal.agent_id)
+    rows = session.exec(q.order_by(ScenarioEvent.injected_at.desc()).limit(50)).all()
     return {"scenarios": [
         {
             "id": r.id, "agent_id": r.agent_id, "provider": r.provider,
@@ -141,7 +163,10 @@ def get_data_quality(
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ):
-    rows = session.exec(select(DataQualityEvent).order_by(DataQualityEvent.started_at.desc()).limit(20)).all()
+    q = select(DataQualityEvent)
+    if principal.role == "provider":
+        q = q.where(DataQualityEvent.provider == principal.provider)
+    rows = session.exec(q.order_by(DataQualityEvent.started_at.desc()).limit(20)).all()
     return {"events": [
         {
             "id": r.id, "provider": r.provider, "issue": r.issue, "note": r.note,

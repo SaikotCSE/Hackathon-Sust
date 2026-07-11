@@ -395,7 +395,7 @@ def dashboard(
         # A "recurring problem" = an agent or area that appears multiple times
         # within the lookback window. We count open alerts and anomaly events
         # by (agent, area, provider) for two windows so a manager can see both
-        # today's hot spots and the slow-burn repeat offenders.
+        # today's hot spots and recurring review patterns.
         window_minutes = since_minutes if since_minutes is not None else 60 * 24 * 7
         cutoff_24h = datetime.utcnow() - timedelta(hours=24)
         cutoff_window = datetime.utcnow() - timedelta(minutes=window_minutes)
@@ -442,7 +442,7 @@ def dashboard(
                 "provider": agent_provider,
                 "open_24h": int(open_24h or 0),
                 "open_window": int(open_window or 0),
-                "is_repeat_offender": (open_window or 0) >= 2,
+                "is_recurring_pattern": (open_window or 0) >= 2,
             })
 
         # Anomaly events per area for the same window — surfaces "this area
@@ -544,11 +544,12 @@ def dashboard(
             "principal": principal_block,
         }
 
-    # ----- Risk/Compliance: network-wide escalated cases (and pending)
+    # ----- Risk/Compliance: only cases formally escalated to the risk owner
     if role == "risk":
         alerts = session.exec(
             select(Alert)
-            .where(Alert.status.in_(("escalated", "compliance_decision", "under_review")))
+            .where(Alert.owner_role == "risk")
+            .where(Alert.status.in_(("escalated", "risk_review")))
             .order_by(Alert.priority_score.desc(), Alert.created_at.desc())
             .limit(50)
         ).all()
@@ -562,6 +563,9 @@ def dashboard(
                 "owner_label": a.owner_label, "confidence": a.confidence,
                 "reasons": json.loads(a.reasons_json or "[]"),
                 "evidence": json.loads(a.evidence_json or "[]"),
+                "recommended_actions": json.loads(a.recommended_actions_json or "[]"),
+                "fused_explanation": a.fused_explanation,
+                "initial_owner": a.initial_owner,
                 "created_at": a.created_at.isoformat(),
             })
         return {
@@ -622,9 +626,10 @@ def dashboard_series(
             select(BalanceHistory)
             .where(BalanceHistory.agent_id == agent_id)
             .where(BalanceHistory.provider == prov)
-            .order_by(BalanceHistory.ts.asc())
+            .order_by(BalanceHistory.ts.desc())
             .limit(limit)
         ).all()
+        rows = list(reversed(rows))
         rp = rate_projection(session, agent_id, prov)
         out.append({
             "provider": prov,

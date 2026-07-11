@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "decision-weights.json"
+_CONFIG_PATH = Path(__file__).resolve().parents[4] / "config" / "decision-weights.json"
 
 
 def _load_raw() -> dict:
@@ -135,8 +135,8 @@ def _severity_modifier(initial_owner: str, festival: bool, peak_hour: bool) -> f
         mod += 0.05
     if peak_hour:
         mod += 0.03
-    # Anomaly + festival is the exact case where context-aware distinction matters
-    # most (legitimate spike vs suspicious). Don't double-penalize.
+    # Unusual-activity signal + festival is where context-aware distinction
+    # matters most (legitimate spike vs review-worthy pattern). Don't double-penalize.
     return mod
 
 
@@ -145,6 +145,9 @@ def _pick_actions(
     severity: str,
     initial_owner: str,
     data_quality: float,
+    has_liquidity: bool,
+    has_anomaly: bool,
+    signal_confidence: float,
 ) -> List[Dict]:
     catalog = actions_catalog() or [
         {"key": "notify_ops", "label": "Notify Operations", "weight": 0.97},
@@ -158,24 +161,21 @@ def _pick_actions(
 
     selected: List[str] = []
 
-    if severity in ("high", "critical"):
-        selected += ["notify_ops", "assign_field_officer", "request_cash_support"]
-    elif severity == "low":
-        selected += ["notify_ops", "monitor"]
-    else:
+    if signal_confidence < 0.5:
         selected += ["monitor"]
+    else:
+        if has_liquidity:
+            if severity in ("high", "critical"):
+                selected += ["notify_ops", "request_cash_support", "assign_field_officer"]
+            else:
+                selected += ["notify_ops", "monitor"]
+        if has_anomaly:
+            selected += ["risk_review", "monitor"]
+        if not has_liquidity and not has_anomaly:
+            selected += ["monitor"]
 
-    if initial_owner == "anomaly":
-        # Replace generic monitor with risk_review at the end of the list
-        selected = [k for k in selected if k != "monitor"]
-        selected.append("risk_review")
-    if initial_owner == "data-quality":
-        selected = [k for k in selected if k not in ("request_cash_support",)]
+    if initial_owner == "data-quality" or data_quality < 0.6:
         selected.append("data_quality_followup")
-    if data_quality < 0.6:
-        # Always include data_quality follow-up when feed is degraded
-        if "data_quality_followup" not in selected:
-            selected.append("data_quality_followup")
 
     # De-duplicate, preserve order, attach weights from the catalog
     seen = set()
@@ -195,12 +195,13 @@ def _owner_for(initial_owner: str, severity: str) -> Tuple[str, str]:
     if initial_owner == "data-quality":
         return "provider", "Financial Service Provider — feed owner"
     if initial_owner == "anomaly":
-        if severity == "critical":
-            return "risk", "Risk analyst (final call)"
-        return "ops", "Provider Operations / Network Coordination (initial triage)"
+        # Operations performs the initial evidence/context triage. It may then
+        # escalate, but it must never make the independent compliance decision.
+        return "ops", "Provider Operations / Network Coordination — initial triage"
     # liquidity
     if severity == "critical":
         return "ops", "Provider Operations / Network Coordination"
+    return "ops", "Provider Operations / Network Coordination (initial triage)"
 
 
 def _fused_explanation(
@@ -210,6 +211,8 @@ def _fused_explanation(
     severity: str,
     priority_score: int,
     data_quality: float,
+    confidence: float,
+    action_hint: str,
 ) -> str:
     pieces: List[str] = []
     if inp.forecast_hours_to_shortage is not None:
@@ -220,7 +223,7 @@ def _fused_explanation(
             else f"Predicted {inp.provider.upper()} balance depletion in {inp.forecast_hours_to_shortage:.1f} hours"
         )
     if inp.anomaly_confidence >= 0.5:
-        pieces.append("Repeated transaction amounts and elevated transaction frequency contributed to an elevated anomaly score")
+        pieces.append("Unusual-activity rule evidence requires human review; it is not proof of wrongdoing")
     if inp.customers_waiting:
         pieces.append(f"approximately {inp.customers_waiting} customers could be affected")
     if inp.festival or inp.peak_hour:
@@ -238,19 +241,11 @@ def _fused_explanation(
     headline = {
         "critical": "Critical pressure detected.",
         "high": "High pressure detected.",
-        "low": "Low-liquidity pressure detected.",
+        "low": "Advisory signal detected.",
         "normal": "All providers within normal range.",
     }[severity]
 
-    confidence_pct = int(round(inp.forecast_confidence * inp.anomaly_confidence * data_quality * 100))
-    confidence_pct = max(35, min(99, confidence_pct))
-
-    action_hint = {
-        "critical": "assign a field officer and begin operational coordination",
-        "high": "notify operations and prepare for field coordination",
-        "low": "monitor closely and notify operations",
-        "normal": "no action required",
-    }[severity]
+    confidence_pct = int(round(confidence * 100))
 
     body = ". ".join(pieces)
     return (
@@ -272,23 +267,40 @@ def fuse(inp: FusionInput) -> FusionOutput:
     anomaly = max(0.0, min(1.0, inp.anomaly_confidence))
     dq = max(0.0, min(1.0, inp.data_quality))
 
+    has_liquidity = inp.forecast_hours_to_shortage is not None
+    has_anomaly = anomaly >= 0.5
+    relevant_confidences = ([confidence] if has_liquidity else []) + ([anomaly] if has_anomaly else [])
+    signal_confidence = sum(relevant_confidences) / len(relevant_confidences) if relevant_confidences else max(confidence, anomaly)
+    supported_impact = impact * signal_confidence
+
     raw = (
-        w["liquidityForecastWeight"] * urgency
+        w["liquidityForecastWeight"] * urgency * confidence
         + w["anomalyWeight"] * anomaly
-        + w["customerImpactWeight"] * impact
-        + w["confidenceWeight"] * confidence
-        + w["dataQualityWeight"] * dq
+        + w["customerImpactWeight"] * supported_impact
+        + w["confidenceWeight"] * signal_confidence
+        + w["dataQualityWeight"] * (1.0 - dq)
     )
     raw += _severity_modifier(inp.initial_owner, inp.festival, inp.peak_hour)
     raw = max(0.0, min(1.0, raw))
     priority_score = int(round(raw * 100))
+    if has_anomaly:
+        # A rule-backed unusual-activity event must reach the human-review
+        # queue even when no liquidity pressure accompanies it.
+        priority_score = max(31, priority_score)
+    # A shaky but operationally relevant signal becomes an explicit monitor
+    # alert, never a confident high-impact recommendation.
+    if (has_liquidity or anomaly > 0) and signal_confidence < 0.5:
+        priority_score = max(31, min(priority_score, 60))
     severity = tier_for(priority_score)
 
     owner_role, owner_label = _owner_for(inp.initial_owner, severity)
-    ranked = _pick_actions(severity=severity, initial_owner=inp.initial_owner, data_quality=dq)
+    ranked = _pick_actions(
+        severity=severity, initial_owner=inp.initial_owner, data_quality=dq,
+        has_liquidity=has_liquidity, has_anomaly=has_anomaly,
+        signal_confidence=signal_confidence,
+    )
 
-    fused_conf = confidence * anomaly * (0.5 + 0.5 * dq)  # data quality noticeably drags it
-    fused_conf = max(0.3, min(0.99, fused_conf))
+    fused_conf = max(0.0, min(0.99, signal_confidence * (0.5 + 0.5 * dq)))
 
     # Reasons must always be derived from data actually present.
     reasons: List[str] = []
@@ -304,9 +316,13 @@ def fuse(inp: FusionInput) -> FusionOutput:
             reasons.append(f"Anomaly signal: {r}")
     if dq < 0.7:
         reasons.append(f"Data quality degraded ({dq:.2f})")
+    reasons.append(f"Decision-support uncertainty: {int(round(fused_conf * 100))}% confidence; human verification required")
+
+    top_action = ranked[0]["label"] if ranked else "Monitor"
 
     explanation = _fused_explanation(
-        inp, urgency=urgency, severity=severity, priority_score=priority_score, data_quality=dq
+        inp, urgency=urgency, severity=severity, priority_score=priority_score,
+        data_quality=dq, confidence=fused_conf, action_hint=top_action,
     )
 
     return FusionOutput(

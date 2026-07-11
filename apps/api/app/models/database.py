@@ -40,6 +40,12 @@ class Agent(SQLModel, table=True):
     code: str = Field(index=True, unique=True)  # synthetic ID, e.g. "AGT-DHK-014"
     display_name: str
     area: str
+    contact_name: str = "Outlet contact"
+    contact_phone: str = "+8801700000000"  # synthetic demo contact
+    field_officer_name: str = "Assigned Field Officer"
+    field_officer_phone: str = "+8801800000000"  # synthetic demo contact
+    area_manager_name: str = "Area Operations Manager"
+    area_manager_phone: str = "+8801900000000"  # synthetic demo contact
     physical_cash: float = 100_000.0
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -113,6 +119,7 @@ class ForecastSnapshot(SQLModel, table=True):
     method: str  # "rate_projection" | "rate_projection+lgbm"
     feature_importance_json: str = "{}"
     data_quality: float = 1.0  # 0..1, 1 = healthy
+    burn_rate_per_min: float = 0.0  # stored with ETA so read paths stay internally consistent
     ts: datetime = Field(default_factory=datetime.utcnow, index=True)
 
     __table_args__ = (
@@ -187,12 +194,96 @@ class Case(SQLModel, table=True):
     state: str = Field(default="assigned", index=True)
     owner_role: str
     owner_label: str
+    assigned_to: str = "Operations queue"
+    assigned_contact_type: str = "operations"
+    resolution_code: Optional[str] = None
+    resolution_summary: Optional[str] = None
+    closed_at: Optional[datetime] = None
+    risk_recommendation: Optional[str] = None
+    risk_recommendation_note: Optional[str] = None
+    risk_recommended_by: Optional[str] = None
+    risk_recommended_at: Optional[datetime] = None
     notes_json: str = "[]"  # list[{ts, role, user, text}]
     audit_json: str = "[]"  # list[{ts, from_state, to_state, actor, reason}]
+    explanation_json: str = "{}"  # validated AI/fallback explanation payload
+    explanation_provider: str = "fallback"  # gemini | grok | fallback
+    explanation_model: str = "deterministic-evidence-v1"
+    explanation_status: str = "pending"  # pending | generated | fallback
+    explanation_error: Optional[str] = None
+    explanation_generated_at: Optional[datetime] = None
+    explanation_language: str = "en"
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     alert: Optional["Alert"] = Relationship(back_populates="cases")
+
+
+class CashSupportRequest(SQLModel, table=True):
+    """Agent-to-provider liquidity support request and provider notification."""
+
+    __tablename__ = "cash_support_requests"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    alert_id: int = Field(foreign_key="alerts.id", index=True)
+    agent_id: int = Field(foreign_key="agents.id", index=True)
+    provider: str = Field(index=True)
+    requested_by: str
+    amount: Optional[float] = None
+    forecast_balance: Optional[float] = None
+    forecast_burn_rate_per_min: Optional[float] = None
+    coverage_hours: float = 8.0
+    target_balance: Optional[float] = None
+    calculation: str = ""
+    applied_amount: float = 0.0
+    balance_after: Optional[float] = None
+    applied_at: Optional[datetime] = None
+    note: str = ""
+    status: str = Field(default="requested", index=True)  # requested|acknowledged|approved|rejected|fulfilled
+    provider_note: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    acknowledged_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class StakeholderNotification(SQLModel, table=True):
+    """Durable, role-scoped inbox event emitted by case routing/actions."""
+
+    __tablename__ = "stakeholder_notifications"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    alert_id: int = Field(foreign_key="alerts.id", index=True)
+    case_id: int = Field(foreign_key="cases.id", index=True)
+    recipient_role: str = Field(index=True)
+    recipient_agent_id: Optional[int] = Field(default=None, index=True)
+    recipient_provider: Optional[str] = Field(default=None, index=True)
+    recipient_area: Optional[str] = Field(default=None, index=True)
+    event: str
+    title: str
+    message: str
+    actor: str
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    read_at: Optional[datetime] = None
+
+
+class ExplanationCall(SQLModel, table=True):
+    """Secret-free server audit of explanation vendor requests and responses."""
+
+    __tablename__ = "explanation_calls"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    alert_id: int = Field(foreign_key="alerts.id", index=True)
+    case_id: int = Field(foreign_key="cases.id", index=True)
+    provider: str
+    model: str
+    language: str
+    endpoint: str
+    request_json: str = "{}"
+    response_json: str = "{}"
+    status: str  # generated | fallback
+    error: Optional[str] = None
+    latency_ms: float = 0.0
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +314,7 @@ class ScenarioEvent(SQLModel, table=True):
     intended_severity: str = "normal"  # for Module 4 priority-classification metric
     is_anomaly_ground_truth: bool = False
     note: str = ""
+    duration_minutes: int = 5
     injected_at: datetime = Field(default_factory=datetime.utcnow)
 
 

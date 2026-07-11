@@ -63,17 +63,13 @@ def current_principal(
     return _resolve(x_user, session)
 
 
-# Role-capability matrix. NOTE: this is the *ground truth* the UI mirrors in
-# apps/web/lib/rbac.ts — keep both in sync. The flag naming deliberately avoids
-# the word "fraud" so the source code never implies the system declares fraud:
-# the capability is whether the role may issue a final compliance decision, not
-# whether they can "close fraud".
+# Role-capability matrix. NOTE: this is the ground truth mirrored by the UI.
 ROLE_PERMISSIONS = {
-    "agent":      {"can_see_own_agent_only": True,  "can_act_on_alerts": True,  "can_close_compliance_case": False, "can_dispatch": False, "can_see_all_providers": True},
-    "ops":        {"can_see_own_agent_only": False, "can_act_on_alerts": True,  "can_close_compliance_case": False, "can_dispatch": True,  "can_see_all_providers": True},
-    "risk":       {"can_see_own_agent_only": False, "can_act_on_alerts": True,  "can_close_compliance_case": True,  "can_dispatch": False, "can_see_all_providers": True},
-    "provider":   {"can_see_own_agent_only": False, "can_act_on_alerts": False, "can_close_compliance_case": False, "can_dispatch": False, "can_see_all_providers": False},
-    "management": {"can_see_own_agent_only": False, "can_act_on_alerts": False, "can_close_compliance_case": False, "can_dispatch": False, "can_see_all_providers": True},
+    "agent":      {"can_see_own_agent_only": True,  "can_act_on_alerts": True,  "can_dispatch": False, "can_see_all_providers": True},
+    "ops":        {"can_see_own_agent_only": False, "can_act_on_alerts": True,  "can_dispatch": True,  "can_see_all_providers": True},
+    "risk":       {"can_see_own_agent_only": False, "can_act_on_alerts": False, "can_dispatch": False, "can_see_all_providers": True},
+    "provider":   {"can_see_own_agent_only": False, "can_act_on_alerts": True,  "can_dispatch": False, "can_see_all_providers": False},
+    "management": {"can_see_own_agent_only": False, "can_act_on_alerts": False, "can_dispatch": False, "can_see_all_providers": True},
 }
 
 

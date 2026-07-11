@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple
 
 from sqlmodel import Session, select
 
-from ..models.database import AnomalyEvent, Transaction
+from ..models.database import AnomalyEvent, ScenarioEvent, Transaction
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +37,34 @@ class RuleHit:
     reasons: List[str]
 
 
+def _tx_evidence(txs: List[Transaction], limit: int = 8) -> str:
+    """Compact, auditable identifiers for the exact records behind a rule hit."""
+    shown = txs[-limit:]
+    return "Evidence transactions: " + "; ".join(
+        f"tx#{t.id} {t.ts.isoformat()} {t.counterparty_id} {t.tx_type} {t.amount:.0f} BDT"
+        for t in shown
+    )
+
+
+def _legitimate_volume_context(session: Session, agent_id: int, provider: str) -> Optional[str]:
+    """Return a declared benign high-volume context active for this provider."""
+    now = datetime.utcnow()
+    rows = session.exec(
+        select(ScenarioEvent)
+        .where(ScenarioEvent.agent_id == agent_id)
+        .where(ScenarioEvent.kind.in_(["salary_day", "bkash_surge"]))
+        .where(ScenarioEvent.is_anomaly_ground_truth == False)  # noqa: E712
+        .order_by(ScenarioEvent.injected_at.desc())
+        .limit(20)
+    ).all()
+    for row in rows:
+        applies = row.kind == "salary_day" or row.provider == provider
+        duration = max(1, int(getattr(row, "duration_minutes", 5) or 5))
+        if applies and (now - row.injected_at).total_seconds() < duration * 60:
+            return row.kind
+    return None
+
+
 def _recent_tx(session: Session, agent_id: int, provider: str, window_minutes: int):
     since = datetime.utcnow() - timedelta(minutes=window_minutes)
     return session.exec(
@@ -57,6 +85,7 @@ def rule_repeated_amount(session: Session, agent_id: int, provider: str) -> Opti
     amount, hit = counts.most_common(1)[0]
     if hit < 5:
         return None
+    matched = [t for t in txs if round(t.amount) == amount]
     confidence = min(0.95, 0.55 + hit * 0.04)
     return RuleHit(
         rule=RULE_REPEATED_AMOUNT,
@@ -68,8 +97,9 @@ def rule_repeated_amount(session: Session, agent_id: int, provider: str) -> Opti
             f"Repeated {hit} transactions",
             f"Amount: {int(amount)} BDT",
             f"Within: {15} minutes",
-            f"Reason: Repeated amount pattern",
-            "Recommended: Human Review",
+            "Pattern: near-identical repeated amount",
+            _tx_evidence(matched),
+            "Uncertainty: repeated values can arise from legitimate fixed-price services; requires human review",
         ],
     )
 
@@ -97,8 +127,9 @@ def rule_velocity_spike(session: Session, agent_id: int, provider: str) -> Optio
         reasons=[
             f"Transaction velocity {ratio:.1f}× above recent baseline",
             f"Sample window: {len(txs_now)} tx / 10 min",
-            "Reason: Abnormal transaction velocity",
-            "Recommended: Human Review",
+            "Pattern: unusual transaction velocity",
+            _tx_evidence(txs_now),
+            "Uncertainty: festivals, salary days, or campaigns can create benign spikes; requires human review",
         ],
     )
 
@@ -120,8 +151,9 @@ def rule_structuring(session: Session, agent_id: int, provider: str) -> Optional
         reasons=[
             f"{len(candidates)} transactions clustered near the {5000} BDT threshold",
             "Range: 4900–5100 BDT",
-            "Reason: Possible transaction splitting / structuring",
-            "Recommended: Human Review",
+            "Pattern: amounts consistent with possible transaction splitting; intent is unknown",
+            _tx_evidence(candidates),
+            "Uncertainty: common bill values can cluster naturally; requires human review",
         ],
     )
 
@@ -146,19 +178,32 @@ def rule_balance_anomaly(session: Session, agent_id: int, provider: str) -> Opti
     if avg <= 0:
         return None
     sd = pstdev(drops) if len(drops) > 1 else 0.0
-    last = history[-1].balance - history[-2].balance
-    if -last > avg + 2 * sd and -last > 5000:
-        confidence = min(0.88, 0.55 + abs(-last - avg) / 50000.0)
+    previous, current = history[-2], history[-1]
+    last_drop = previous.balance - current.balance
+    matching = session.exec(
+        select(Transaction)
+        .where(Transaction.agent_id == agent_id)
+        .where(Transaction.provider == provider)
+        .where(Transaction.ts > previous.ts)
+        .where(Transaction.ts <= current.ts)
+        .where(Transaction.status == "success")
+    ).all()
+    explained_drop = sum(t.amount if t.tx_type == "cash_out" else -t.amount for t in matching)
+    unexplained_drop = last_drop - explained_drop
+    if last_drop > avg + 2 * sd and unexplained_drop > 5000:
+        confidence = min(0.88, 0.55 + abs(unexplained_drop) / 50000.0)
         return RuleHit(
             rule=RULE_BALANCE_ANOMALY,
             confidence=confidence,
             count=1,
-            amount=float(-last),
+            amount=float(unexplained_drop),
             window_minutes=int((history[-1].ts - history[-2].ts).total_seconds() / 60),
             reasons=[
-                f"Sudden balance drop of {int(-last):,} BDT without matching tx",
-                "Reason: Abnormal balance change (reconciliation / data-issue candidate)",
-                "Recommended: Human Review",
+                f"Balance fell {last_drop:,.0f} BDT; successful transactions explain {explained_drop:,.0f} BDT",
+                f"Unreconciled difference: {unexplained_drop:,.0f} BDT",
+                f"Evidence snapshots: history#{history[-2].id} → history#{history[-1].id}",
+                "Pattern: unusual balance change (reconciliation or data-quality candidate)",
+                "Uncertainty: provider delays or manual adjustments can explain this; requires human review",
             ],
         )
     return None
@@ -181,8 +226,9 @@ def rule_timing_anomaly(session: Session, agent_id: int, provider: str) -> Optio
         window_minutes=15,
         reasons=[
             f"{len(odd_hour)} transactions outside normal operating hours",
-            "Reason: Suspicious timing pattern",
-            "Recommended: Human Review",
+            "Pattern: unusual timing pattern",
+            _tx_evidence(odd_hour),
+            "Uncertainty: extended opening hours may be legitimate; requires human review",
         ],
     )
 
@@ -265,12 +311,13 @@ def iforest_score(session: Session, agent_id: int, provider: str, hits: List[Rul
 def detect_anomalies(session: Session, agent_id: int, provider: str) -> List[AnomalyEvent]:
     import json
 
+    legitimate_context = _legitimate_volume_context(session, agent_id, provider)
     heads = [
-        rule_repeated_amount(session, agent_id, provider),
-        rule_velocity_spike(session, agent_id, provider),
-        rule_structuring(session, agent_id, provider),
+        None if legitimate_context else rule_repeated_amount(session, agent_id, provider),
+        None if legitimate_context else rule_velocity_spike(session, agent_id, provider),
+        None if legitimate_context else rule_structuring(session, agent_id, provider),
         rule_balance_anomaly(session, agent_id, provider),
-        rule_timing_anomaly(session, agent_id, provider),
+        None if legitimate_context else rule_timing_anomaly(session, agent_id, provider),
     ]
     fired = [h for h in heads if h is not None]
     if not fired:
@@ -301,3 +348,4 @@ def detect_anomalies(session: Session, agent_id: int, provider: str) -> List[Ano
         events.append(ev)
     session.commit()
     return events
+    matched = [t for t in txs if round(t.amount) == amount]

@@ -65,6 +65,24 @@ class SimulationEngine:
         # In-memory counterparty pool for this agent
         self.counterparties = [f"C{i:04d}" for i in range(1, 41)]
         random.seed(42 + agent_id)
+        # Scenario injection and ticking are separate HTTP requests and therefore
+        # separate engine instances. Restore still-active scenarios from the DB;
+        # keeping them only in memory made the injector UI a no-op.
+        now = datetime.utcnow()
+        recent = self.session.exec(
+            select(ScenarioEvent)
+            .where(ScenarioEvent.agent_id == agent_id)
+            .order_by(ScenarioEvent.injected_at.desc())
+            .limit(50)
+        ).all()
+        for ev in recent:
+            duration = max(1, int(getattr(ev, "duration_minutes", 5) or 5))
+            if (now - ev.injected_at).total_seconds() < duration * 60:
+                self.active_scenarios.append({
+                    "id": ev.id, "kind": ev.kind, "provider": ev.provider,
+                    "started_at": ev.injected_at, "duration_minutes": duration,
+                    "intent": ev.intended_severity,
+                })
 
     # ------------------------------------------------------------------
     # Public API
@@ -83,6 +101,7 @@ class SimulationEngine:
             intended_severity=spec.intended_severity,
             is_anomaly_ground_truth=spec.is_anomaly_ground_truth,
             note=spec.note or spec.label,
+            duration_minutes=spec.duration_minutes,
         )
         self.session.add(ev)
         self.session.commit()
@@ -148,11 +167,13 @@ class SimulationEngine:
         physical = self.session.exec(
             select(ProviderBalance).where(ProviderBalance.agent_id == self.agent_id).where(ProviderBalance.provider == "physical")
         ).first()
+        # A customer cash-out consumes notes from the shared drawer; cash-in
+        # replenishes it. This is deliberately tracked independently of each
+        # provider wallet so a healthy aggregate cannot hide a cash shortage.
         cash_delta = sum(
-            (-tx.amount if tx.tx_type == "cash_out" else tx.amount) * 0.0  # physical cash proxy unchanged for prototype
+            -tx.amount if tx.tx_type == "cash_out" else tx.amount
             for tx in txs
         )
-        cash_delta = 0.0  # keep physical cash narrative separate; demo lets user toggle it via the "drain physical cash" debug panel
         if physical is not None:
             physical.balance = max(0.0, physical.balance + cash_delta)
             physical.updated_at = now
@@ -178,14 +199,22 @@ class SimulationEngine:
 
     def _draw_tx(self, balances: Dict[str, float]) -> tuple:
         active = self.active_scenarios
-        if any(s["kind"] == "bkash_surge" and s["provider"] == "bkash" for s in active):
+        current = max(active, key=lambda s: s["started_at"]) if active else None
+        if current and current["kind"] == "bkash_surge" and current["provider"] == "bkash":
             return ("bkash", "cash_out", random.randint(4000, 6500), random.choice(self.counterparties))
-        if any(s["kind"] == "repeated_amount" for s in active):
-            return (random.choice(["bkash", "nagad", "rocket"]),
+        if current and current["kind"] == "repeated_amount":
+            return (current["provider"],
                     random.choice(["cash_in", "cash_out"]),
-                    4950, random.choice(self.counterparties))
-        if any(s["kind"] == "structuring" for s in active):
+                    2375, random.choice(self.counterparties))
+        if current and current["kind"] == "structuring":
             return ("bkash", "cash_out", random.choice([4950, 4970, 5000, 5030, 5050]),
+                    random.choice(self.counterparties))
+        if current and current["kind"] == "salary_day":
+            # Legitimate high-volume context: deliberately diverse amounts and
+            # counterparties, avoiding the near-5,000 test band.
+            return (random.choice(list(PROVIDERS)),
+                    random.choices(["cash_in", "cash_out"], weights=[0.65, 0.35])[0],
+                    float(random.choice([700, 1100, 1750, 2400, 3200, 6800, 7600, 9200])),
                     random.choice(self.counterparties))
         # Default normal flow — roughly proportional to provider health.
         # Clamp to a tiny positive floor so all-zero balances (every
@@ -219,10 +248,13 @@ class SimulationEngine:
         pass
 
     def _inject_rocket_delay(self, provider: str) -> None:
-        # Write a DataQualityEvent — Module 8 will read this and downgrade
+        # Represent a feed that is already late when the scenario is selected.
+        # Backdating makes the demo deterministic: the very next tick must
+        # enter safe fallback instead of waiting two real-time minutes.
         self.session.add(DataQualityEvent(
             provider="rocket", issue="delay",
             note="Injected via scenario panel — Rocket API delays",
+            started_at=datetime.utcnow() - timedelta(minutes=3),
         ))
         self.session.commit()
 
@@ -249,7 +281,8 @@ def data_quality_for(session: Session, provider: str) -> float:
         if ev.issue == "outage":
             score -= 0.9 * age_factor
         elif ev.issue == "delay":
-            score -= 0.5 * age_factor
+            # A fully late feed must cross the <0.5 safe-fallback threshold.
+            score -= 0.75 * age_factor
         else:
             score -= 0.4 * age_factor
     return max(0.0, min(1.0, score))

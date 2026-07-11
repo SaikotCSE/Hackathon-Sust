@@ -19,17 +19,15 @@ from ..models.database import (
 from ..simulation.engine import PROVIDERS
 
 
-def _demand_label(expected_outflow: Optional[float], burn_rate_per_min: float) -> str:
+def _demand_label(expected_outflow: Optional[float], balance: float) -> str:
     """Map an outflow forecast onto a coarse low/medium/high bucket the UI can
     render as a single line on the provider card."""
-    if expected_outflow is None or burn_rate_per_min <= 0:
+    if expected_outflow is None or expected_outflow <= 0:
         return "low"
-    # 8-hour window worth of expected outflow at the current burn rate.
-    window = burn_rate_per_min * 60 * 8
-    ratio = expected_outflow / max(window, 1.0)
-    if ratio >= 1.1:
+    ratio = expected_outflow / max(balance, 1.0)
+    if ratio >= 1.0:
         return "high"
-    if ratio >= 0.6:
+    if ratio >= 0.5:
         return "medium"
     return "low"
 
@@ -55,10 +53,33 @@ def _recent_deltas(history: List[float], n: int = 3) -> List[float]:
     return out
 
 
-def _expected_outflow(burn_rate_per_min: float, hours: float = 4.0) -> float:
+def _expected_outflow(burn_rate_per_min: float, hours: float = 8.0) -> float:
     """Simple forward-looking outflow projection used for the 'Provider-Aware
     Demand' block. Falls back to zero when no burn rate is known."""
     return round(max(burn_rate_per_min, 0.0) * 60.0 * hours, 2)
+
+
+def _forecast_display(fc, balance: float) -> tuple:
+    """Return internally consistent ETA, burn, freshness and safe UI state."""
+    now = datetime.utcnow()
+    if fc is None:
+        return None, 0.0, "unavailable", None, "No forecast has been computed yet."
+    get = (lambda key, default=None: fc.get(key, default)) if isinstance(fc, dict) else (lambda key, default=None: getattr(fc, key, default))
+    burn = max(0.0, float(get("burn_rate_per_min", 0.0) or 0.0))
+    hours = get("hours_to_shortage")
+    age = max(0.0, (now - get("ts")).total_seconds() / 60.0)
+    confidence = float(get("confidence", 0.0) or 0.0)
+    if age > 10:
+        return None, burn, "stale", age, f"Forecast is {age:.0f} minutes old; run a new simulation tick."
+    if balance <= 0:
+        return 0.0, burn, "depleted", age, "Balance is depleted; verify and request support."
+    if burn <= 0:
+        return None, 0.0, "stable", age, "No net depletion trend in the latest window."
+    if confidence < 0.5:
+        return None, burn, "low_confidence", age, "Trend detected, but confidence is below 50%; monitor for more data."
+    if hours is None:
+        return None, burn, "insufficient_data", age, "Not enough reliable history for a depletion time."
+    return float(hours), burn, "projected", age, get("summary", "") or "Trend-derived depletion estimate."
 
 
 def _provider_health(balance: float, hours_to_shortage: Optional[float], data_quality: float) -> str:
@@ -117,13 +138,31 @@ def overall_score(
             weight += 1
             reasons.append(f"{prov}: e-money pool empty")
             continue
-        if fc is None or fc.hours_to_shortage is None:
+        if fc is None:
             # NOT healthy — we just don't know. Surface as unknown so the
             # rollup can treat incomplete data differently from healthy.
             score += 60
             weight += 1
             no_signal.append(prov)
             reasons.append(f"{prov}: no forecast yet")
+            continue
+        fc_age = (datetime.utcnow() - fc.ts).total_seconds() / 60.0 if getattr(fc, "ts", None) else 0.0
+        if fc_age > 10 or float(getattr(fc, "confidence", 1.0) or 0.0) < 0.5:
+            score += 60
+            weight += 1
+            no_signal.append(prov)
+            why = "stale" if fc_age > 10 else "low confidence"
+            reasons.append(f"{prov}: {why} forecast — refresh before acting")
+            continue
+        if fc.hours_to_shortage is None:
+            if str(getattr(fc, "summary", "")).startswith("stable"):
+                score += 20
+                weight += 1
+                continue
+            score += 60
+            weight += 1
+            no_signal.append(prov)
+            reasons.append(f"{prov}: insufficient data for a forecast")
             continue
         hrs = fc.hours_to_shortage
         if hrs < 0.5:
@@ -161,12 +200,8 @@ def agent_snapshot(session: Session, agent_id: int) -> dict:
         select(ProviderBalance).where(ProviderBalance.agent_id == agent_id)
     ).all()}
 
-    balances = {pb.provider: pb.balance for pb in session.exec(
-        select(ProviderBalance).where(ProviderBalance.agent_id == agent_id)
-    ).all()}
-
-    history_by_provider: Dict[str, List[float]] = {p: [] for p in PROVIDERS}
-    for prov in PROVIDERS:
+    history_by_provider: Dict[str, List[float]] = {p: [] for p in (*PROVIDERS, "physical")}
+    for prov in (*PROVIDERS, "physical"):
         rows = session.exec(
             select(BalanceHistory)
             .where(BalanceHistory.agent_id == agent_id)
@@ -194,29 +229,32 @@ def agent_snapshot(session: Session, agent_id: int) -> dict:
             reasons = json.loads(fc.reasons_json or "[]") if fc else []
         except Exception:
             reasons = []
-        burn = (fc.feature_importance_json or "{}") if fc else "{}"
-        # burn rate per minute stored only as feature — derive from history instead:
-        from ..services.liquidity import rate_projection
-        rp = rate_projection(session, agent_id, prov)
         history = history_by_provider.get(prov, [])[-20:]
-        hours_to_shortage = fc.hours_to_shortage if fc else None
-        expected_outflow = _expected_outflow(rp.burn_rate_per_min)
+        balance = float(balances.get(prov, 0.0))
+        hours_to_shortage, burn_rate, forecast_state, forecast_age, forecast_note = _forecast_display(fc, balance)
+        expected_outflow = _expected_outflow(burn_rate)
         providers_out.append({
             "provider": prov,
-            "balance": balances.get(prov, 0.0),
-            "health": _provider_health(balances.get(prov, 0.0), hours_to_shortage, fc.data_quality if fc else 1.0),
-            "burn_rate_per_min": rp.burn_rate_per_min,
+            "balance": balance,
+            "health": _provider_health(balance, hours_to_shortage, fc.data_quality if fc else 1.0),
+            "burn_rate_per_min": burn_rate,
             "hours_to_shortage": hours_to_shortage,
             "forecast_confidence": fc.confidence if fc else 0.0,
-            "forecast_summary": (fc.summary if fc else "") or (reasons[0] if reasons else ""),
+            "forecast_summary": forecast_note,
             "forecast_reasons": reasons,
             "data_quality": fc.data_quality if fc else 1.0,
             "history": history,
             # ----- fields used by the role-aware dashboard card UI -----
             "recent_deltas": _recent_deltas(history, 3),
             "expected_outflow_next_hours": expected_outflow,
-            "current_demand_label": _demand_label(expected_outflow, rp.burn_rate_per_min),
+            "current_demand_label": _demand_label(expected_outflow, balance),
             "shortage_eta_human": _shortage_eta_human(hours_to_shortage),
+            "forecast_state": forecast_state,
+            "forecast_age_minutes": round(forecast_age, 1) if forecast_age is not None else None,
+            "forecast_generated_at": fc.ts.isoformat() if fc else None,
+            "projected_balance_8h": round(max(0.0, balance - expected_outflow), 2),
+            "degraded": forecast_state in ("stale", "unavailable", "insufficient_data") or (fc.data_quality < 0.5 if fc else True),
+            "degraded_reason": forecast_note if forecast_state in ("stale", "unavailable", "insufficient_data") else None,
         })
 
     open_alerts = session.exec(
@@ -245,16 +283,19 @@ def agent_snapshot(session: Session, agent_id: int) -> dict:
     worst_dq = 1.0
     n_with_burn = 0
     n_with_h2s = 0
+    any_degraded = False
     for prov_block in providers_out:
         dq = float(prov_block.get("data_quality") or 0.0)
         burn = float(prov_block.get("burn_rate_per_min") or 0.0)
         conf = float(prov_block.get("forecast_confidence") or 0.0)
         bal = float(prov_block.get("balance") or 0.0)
-        total_emoney += bal
+        any_degraded = any_degraded or bool(prov_block.get("degraded"))
+        if prov_block.get("provider") != "physical":
+            total_emoney += bal
         # weight by data quality so stale columns don't dominate the shared burn rate
         if burn > 0:
-            weighted_burn_num += burn * max(dq, 0.05)
-            weighted_burn_den += max(dq, 0.05)
+            weighted_burn_num += burn
+            weighted_burn_den = 1.0
             n_with_burn += 1
         if prov_block.get("hours_to_shortage") is not None:
             n_with_h2s += 1
@@ -288,9 +329,9 @@ def agent_snapshot(session: Session, agent_id: int) -> dict:
     elif combined_confidence < 0.25:
         combined_hours_to_shortage = None
         notes.append("Combined projection paused — confidence is low because some provider feeds are late or stale.")
-    elif worst_dq < 0.4:
+    elif worst_dq < 0.4 or any_degraded:
         combined_hours_to_shortage = None
-        notes.append("Combined projection paused — at least one provider's data quality is below the safe threshold.")
+        notes.append("Combined projection paused — at least one provider needs fresh or higher-quality data.")
     else:
         combined_hours_to_shortage = round(total_cash / (combined_burn_per_min * 60.0), 2)
 
@@ -359,6 +400,11 @@ def agent_snapshot(session: Session, agent_id: int) -> dict:
                 "status": a.status,
                 "owner_role": a.owner_role,
                 "owner_label": a.owner_label,
+                "initial_owner": a.initial_owner,
+                "reasons": json.loads(a.reasons_json or "[]"),
+                "evidence": json.loads(a.evidence_json or "[]"),
+                "recommended_actions": json.loads(a.recommended_actions_json or "[]"),
+                "fused_explanation": a.fused_explanation,
                 "created_at": a.created_at.isoformat(),
             }
             for a in open_alerts
@@ -399,6 +445,7 @@ def _forecast_dict(fc) -> dict:
         "reasons_json": fc.reasons_json or "[]",
         "feature_importance_json": fc.feature_importance_json or "{}",
         "data_quality": fc.data_quality if fc.data_quality is not None else 1.0,
+        "burn_rate_per_min": getattr(fc, "burn_rate_per_min", 0.0),
         "ts": fc.ts,
     }
 
@@ -487,8 +534,8 @@ def batch_agent_snapshots(session: Session, agent_ids: List[int]) -> List[dict]:
         balances = balances_by_agent.get(agent_id, {})
         open_alerts = alerts_by_agent.get(agent_id, [])
 
-        history_by_provider: Dict[str, List[float]] = {p: [] for p in PROVIDERS}
-        for prov in PROVIDERS:
+        history_by_provider: Dict[str, List[float]] = {p: [] for p in (*PROVIDERS, "physical")}
+        for prov in (*PROVIDERS, "physical"):
             history_by_provider[prov] = list(history_by_key.get((agent_id, prov), []))
 
         forecasts: Dict[str, Optional[dict]] = {}
@@ -500,27 +547,32 @@ def batch_agent_snapshots(session: Session, agent_ids: List[int]) -> List[dict]:
                 reasons = json.loads(fc["reasons_json"]) if fc else []
             except Exception:
                 reasons = []
-            from ..services.liquidity import rate_projection
-            rp = rate_projection(session, agent_id, prov)
             history = history_by_provider.get(prov, [])[-20:]
-            hours_to_shortage = fc["hours_to_shortage"] if fc else None
-            expected_outflow = _expected_outflow(rp.burn_rate_per_min)
+            balance = float(balances.get(prov, 0.0))
+            hours_to_shortage, burn_rate, forecast_state, forecast_age, forecast_note = _forecast_display(fc, balance)
+            expected_outflow = _expected_outflow(burn_rate)
             providers_out.append({
                 "provider": prov,
-                "balance": balances.get(prov, 0.0),
-                "health": _provider_health(balances.get(prov, 0.0), hours_to_shortage,
+                "balance": balance,
+                "health": _provider_health(balance, hours_to_shortage,
                                           fc["data_quality"] if fc else 1.0),
-                "burn_rate_per_min": rp.burn_rate_per_min,
+                "burn_rate_per_min": burn_rate,
                 "hours_to_shortage": hours_to_shortage,
                 "forecast_confidence": fc["confidence"] if fc else 0.0,
-                "forecast_summary": (fc["summary"] if fc else "") or (reasons[0] if reasons else ""),
+                "forecast_summary": forecast_note,
                 "forecast_reasons": reasons,
                 "data_quality": fc["data_quality"] if fc else 1.0,
                 "history": history,
                 "recent_deltas": _recent_deltas(history, 3),
                 "expected_outflow_next_hours": expected_outflow,
-                "current_demand_label": _demand_label(expected_outflow, rp.burn_rate_per_min),
+                "current_demand_label": _demand_label(expected_outflow, balance),
                 "shortage_eta_human": _shortage_eta_human(hours_to_shortage),
+                "forecast_state": forecast_state,
+                "forecast_age_minutes": round(forecast_age, 1) if forecast_age is not None else None,
+                "forecast_generated_at": fc["ts"].isoformat() if fc else None,
+                "projected_balance_8h": round(max(0.0, balance - expected_outflow), 2),
+                "degraded": forecast_state in ("stale", "unavailable", "insufficient_data") or (fc["data_quality"] < 0.5 if fc else True),
+                "degraded_reason": forecast_note if forecast_state in ("stale", "unavailable", "insufficient_data") else None,
             })
 
         dq_by_provider: Dict[str, float] = {
@@ -543,6 +595,9 @@ def batch_agent_snapshots(session: Session, agent_ids: List[int]) -> List[dict]:
             shim = _FcShim()
             shim.hours_to_shortage = fc["hours_to_shortage"]
             shim.data_quality = fc["data_quality"]
+            shim.confidence = fc["confidence"]
+            shim.ts = fc["ts"]
+            shim.summary = fc["summary"]
             forecast_objs[prov] = shim
         overall, overall_reason = overall_score(balances, forecast_objs, dq_by_provider)
 
@@ -556,15 +611,18 @@ def batch_agent_snapshots(session: Session, agent_ids: List[int]) -> List[dict]:
         worst_dq = 1.0
         n_with_burn = 0
         n_with_h2s = 0
+        any_degraded = False
         for prov_block in providers_out:
             dq = float(prov_block.get("data_quality") or 0.0)
             burn = float(prov_block.get("burn_rate_per_min") or 0.0)
             conf = float(prov_block.get("forecast_confidence") or 0.0)
             bal = float(prov_block.get("balance") or 0.0)
-            total_emoney += bal
+            any_degraded = any_degraded or bool(prov_block.get("degraded"))
+            if prov_block.get("provider") != "physical":
+                total_emoney += bal
             if burn > 0:
-                weighted_burn_num += burn * max(dq, 0.05)
-                weighted_burn_den += max(dq, 0.05)
+                weighted_burn_num += burn
+                weighted_burn_den = 1.0
                 n_with_burn += 1
             if prov_block.get("hours_to_shortage") is not None:
                 n_with_h2s += 1
@@ -591,9 +649,9 @@ def batch_agent_snapshots(session: Session, agent_ids: List[int]) -> List[dict]:
         elif combined_confidence < 0.25:
             combined_hours_to_shortage = None
             notes.append("Combined projection paused — confidence is low because some provider feeds are late or stale.")
-        elif worst_dq < 0.4:
+        elif worst_dq < 0.4 or any_degraded:
             combined_hours_to_shortage = None
-            notes.append("Combined projection paused — at least one provider's data quality is below the safe threshold.")
+            notes.append("Combined projection paused — at least one provider needs fresh or higher-quality data.")
         else:
             combined_hours_to_shortage = round(total_cash / (combined_burn_per_min * 60.0), 2)
 
@@ -660,6 +718,11 @@ def batch_agent_snapshots(session: Session, agent_ids: List[int]) -> List[dict]:
                     "status": a.status,
                     "owner_role": a.owner_role,
                     "owner_label": a.owner_label,
+                    "initial_owner": a.initial_owner,
+                    "reasons": json.loads(a.reasons_json or "[]"),
+                    "evidence": json.loads(a.evidence_json or "[]"),
+                    "recommended_actions": json.loads(a.recommended_actions_json or "[]"),
+                    "fused_explanation": a.fused_explanation,
                     "created_at": a.created_at.isoformat(),
                 }
                 for a in open_alerts

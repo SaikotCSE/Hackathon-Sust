@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 from ..models.database import (
     Alert,
     AnomalyEvent,
+    Case,
     ForecastSnapshot,
     ProviderBalance,
     Transaction,
@@ -69,9 +70,7 @@ def build_alert_for_provider(
         .order_by(Alert.created_at.desc())
         .limit(1)
     ).first()
-    if recent is not None and (datetime.utcnow() - recent.created_at).total_seconds() < 60:
-        # Touch the existing alert so it stays current, but don't double-fire.
-        return None
+    enrich_recent = recent is not None and (datetime.utcnow() - recent.created_at).total_seconds() < 60
 
     forecast_reasons: List[str] = []
     try:
@@ -184,32 +183,63 @@ def build_alert_for_provider(
         evidence.append({"source": "forecast", "rule": "rate_projection", "text": r})
     if data_quality < 0.7:
         evidence.append({"source": "data-quality", "rule": "feed", "text": f"{provider.upper()} feed quality {data_quality:.2f}"})
+    if not evidence:
+        evidence.append({
+            "source": "decision-support", "rule": "insufficient_signal",
+            "text": "No granular supporting records are available; monitor until more evidence arrives.",
+        })
 
-    alert = Alert(
-        agent_id=agent_id,
-        provider=provider,
-        severity=fusion.severity,
-        priority_score=fusion.priority_score,
-        title=title,
-        summary=summary,
-        reasons_json=json.dumps(fusion.reasons),
-        evidence_json=json.dumps(evidence),
-        confidence=fusion.confidence,
-        recommended_actions_json=json.dumps(fusion.ranked_actions),
-        fused_explanation=fusion.fused_explanation,
-        owner_role=fusion.owner_role,
-        owner_label=fusion.owner_label,
-        initial_owner=initial_owner,
-        status="open",
-        ground_truth_severity=fusion.severity,
-    )
+    if enrich_recent:
+        # A second signal arriving moments later enriches the same operational
+        # incident instead of being discarded or creating an unrelated alert.
+        alert = recent
+        alert.severity = fusion.severity
+        alert.priority_score = fusion.priority_score
+        alert.title = title
+        alert.summary = summary
+        alert.reasons_json = json.dumps(fusion.reasons)
+        alert.evidence_json = json.dumps(evidence)
+        alert.confidence = fusion.confidence
+        alert.recommended_actions_json = json.dumps(fusion.ranked_actions)
+        alert.fused_explanation = fusion.fused_explanation
+        alert.owner_role = fusion.owner_role
+        alert.owner_label = fusion.owner_label
+        alert.initial_owner = initial_owner
+        alert.updated_at = datetime.utcnow()
+        alert.ground_truth_severity = fusion.severity
+    else:
+        alert = Alert(
+            agent_id=agent_id,
+            provider=provider,
+            severity=fusion.severity,
+            priority_score=fusion.priority_score,
+            title=title,
+            summary=summary,
+            reasons_json=json.dumps(fusion.reasons),
+            evidence_json=json.dumps(evidence),
+            confidence=fusion.confidence,
+            recommended_actions_json=json.dumps(fusion.ranked_actions),
+            fused_explanation=fusion.fused_explanation,
+            owner_role=fusion.owner_role,
+            owner_label=fusion.owner_label,
+            initial_owner=initial_owner,
+            status="open",
+            ground_truth_severity=fusion.severity,
+        )
     session.add(alert)
     session.commit()
     session.refresh(alert)
 
     # Open a Case immediately for non-trivial severity
-    if fusion.severity in ("high", "critical", "low"):
+    if not enrich_recent and fusion.severity in ("high", "critical", "low"):
         cases.open_case_for_alert(session, alert, owner_role=fusion.owner_role, owner_label=fusion.owner_label)
+    elif enrich_recent:
+        case = session.exec(select(Case).where(Case.alert_id == alert.id)).first()
+        if case is not None:
+            case.owner_role = fusion.owner_role
+            case.owner_label = fusion.owner_label
+            session.add(case)
+            session.commit()
     return alert
 
 

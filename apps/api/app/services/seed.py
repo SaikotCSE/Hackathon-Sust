@@ -3,6 +3,7 @@ handful of recent transactions + balance-history so the dashboard isn't empty
 on first paint."""
 from __future__ import annotations
 
+import json
 import random
 from datetime import datetime, timedelta
 from typing import List
@@ -43,8 +44,16 @@ def seed_if_empty(session: Session) -> Agent:
     ]
 
     agents = []
-    for code, name, area, balances, depleted in agents_seed:
-        a = Agent(code=code, display_name=name, area=area)
+    for idx, (code, name, area, balances, depleted) in enumerate(agents_seed, start=1):
+        a = Agent(
+            code=code, display_name=name, area=area,
+            contact_name=f"{name} operator",
+            contact_phone=f"+8801700000{idx:03d}",
+            field_officer_name=f"Field Officer {area}",
+            field_officer_phone=f"+8801800000{idx:03d}",
+            area_manager_name=f"Area Manager {area.split('-')[0]}",
+            area_manager_phone=f"+8801900000{idx:03d}",
+        )
         session.add(a)
         session.commit()
         session.refresh(a)
@@ -199,10 +208,19 @@ def seed_if_empty(session: Session) -> Agent:
                     priority_score={"low": 45, "high": 70, "critical": 92}[sev],
                     title=f"{prov.upper()} {sev} risk",
                     summary=f"Seeded {sev} alert for {prov}",
-                    reasons_json="[]",
-                    evidence_json="[]",
+                    reasons_json=json.dumps([
+                        f"Synthetic {prov} {sev} pressure scenario for decision-support demonstration",
+                        "Decision-support uncertainty: 70% confidence; human verification required",
+                    ]),
+                    evidence_json=json.dumps([{
+                        "source": "synthetic-seed", "rule": "demo_pressure",
+                        "text": f"Seeded labeled {sev} provider-pressure record for {prov}",
+                    }]),
                     confidence=0.7,
-                    recommended_actions_json="[]",
+                    recommended_actions_json=json.dumps([
+                        {"key": "notify_ops", "label": "Notify Operations", "weight": 0.97},
+                        {"key": "monitor", "label": "Monitor", "weight": 0.72},
+                    ]),
                     fused_explanation="Seeded for management rollup demo.",
                     owner_role="ops",
                     owner_label="Provider Operations",

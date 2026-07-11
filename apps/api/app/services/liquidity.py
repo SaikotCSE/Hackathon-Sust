@@ -235,6 +235,15 @@ def lgbm_predict(
 
     Returns a suppressed result when there isn't enough history (cold start) or the
     provider's feed is degraded, so the caller can decide whether to surface it.
+
+    Cold-start policy:
+      - Need ≥8 snapshots to attempt a fit (was 20). With 8–19 we still fit but
+        flag the result as low-confidence context rather than a prediction.
+      - With ≥20 snapshots we predict normally and the result counts as
+        confirmation.
+    In both cases, feature importances are always surfaced so the UI can use
+    them as context ("LightGBM flags rolling_outflow_velocity as the dominant
+    signal") even when no prediction is emitted.
     """
     if not _lgbm_enabled():
         return _lgbm_suppressed("lightgbm not installed")
@@ -246,8 +255,8 @@ def lgbm_predict(
         .order_by(BalanceHistory.ts)
     ).all()
 
-    if len(snapshots) < 20:
-        return _lgbm_suppressed(f"only {len(snapshots)} snapshots — need ~20 for stable fit")
+    if len(snapshots) < 8:
+        return _lgbm_suppressed(f"only {len(snapshots)} snapshots — need ~8 for a fit")
 
     try:
         import numpy as np
@@ -283,7 +292,7 @@ def lgbm_predict(
         # Target: ratio of (current balance / max balance) — proxy for shortage likelihood
         targets.append(balance_ratio)
 
-    if len(feats) < 5:
+    if len(feats) < 4:
         return _lgbm_suppressed(f"only {len(feats)} feature rows — not enough to fit")
 
     X = np.array(feats, dtype=np.float64)
@@ -294,23 +303,60 @@ def lgbm_predict(
     cache_key = (agent_id, provider)
     model_entry = _LGBM_CACHE.get(cache_key)
     if model_entry is None or model_entry["n"] != len(snapshots):
+        # Lighter model for the smaller training set: shallower trees, fewer
+        # leaves, more aggressive min_data_in_leaf to avoid overfitting to
+        # 8–19 noisy points.
+        n = len(snapshots)
+        if n < 20:
+            params = {
+                "objective": "regression",
+                "metric": "rmse",
+                "learning_rate": 0.05,
+                "num_leaves": 4,
+                "min_data_in_leaf": max(2, n // 4),
+                "verbose": -1,
+            }
+            num_boost_round = 20
+        else:
+            params = {
+                "objective": "regression",
+                "metric": "rmse",
+                "learning_rate": 0.05,
+                "num_leaves": 8,
+                "min_data_in_leaf": 4,
+                "verbose": -1,
+            }
+            num_boost_round = 40
         train_data = lgb.Dataset(X, label=y, feature_name=feature_names)
-        params = {
-            "objective": "regression",
-            "metric": "rmse",
-            "learning_rate": 0.05,
-            "num_leaves": 8,
-            "min_data_in_leaf": 4,
-            "verbose": -1,
-        }
-        booster = lgb.train(params, train_data, num_boost_round=40)
+        booster = lgb.train(params, train_data, num_boost_round=num_boost_round)
         importance = booster.feature_importance(importance_type="gain")
         model_entry = {
             "booster": booster,
             "importance": dict(zip(feature_names, [float(x) for x in importance])),
             "n": len(snapshots),
+            "n_features": len(feats),
         }
         _LGBM_CACHE[cache_key] = model_entry
+
+    # Always surface feature importances — useful as context even when we
+    # can't predict (cold start). Filter out non-signal columns.
+    importance_clean = {
+        k: v for k, v in model_entry["importance"].items()
+        if not k.startswith("_") and not k.startswith("is_")  # drop one-hot cols
+    }
+
+    # Below 20 snapshots we don't trust the prediction enough to override
+    # the rate projection — return importances as context only.
+    if model_entry["n"] < 20:
+        return LGBMResult(
+            hours_to_shortage=None,
+            confidence=0.0,
+            feature_importance={
+                **importance_clean,
+                "_suppressed": 1.0,
+                "_reason": f"only {model_entry['n']} snapshots — feature context only, no prediction",
+            },
+        )
 
     cur_bal = balances[-1]
     max_bal_so_far = max(balances) or 1.0
@@ -332,7 +378,7 @@ def lgbm_predict(
     return LGBMResult(
         hours_to_shortage=hours_pred,
         confidence=0.65,
-        feature_importance=model_entry["importance"],
+        feature_importance=importance_clean,
     )
 
 
@@ -377,11 +423,37 @@ def compute_forecast(
             # Disagreement: silently drop LightGBM
             pass
 
+    # When LightGBM is suppressed (cold start) but still produced feature
+    # importances, surface the dominant signal as context-only — not as
+    # confirmation. This way the UI can show "LightGBM flags
+    # rolling_outflow_velocity" even with <20 snapshots.
+    if lgbm_suppressed and not importance:
+        context_only = {
+            k: v for k, v in lgbm.feature_importance.items()
+            if not k.startswith("_")
+        }
+        if context_only:
+            top = max(context_only, key=context_only.get)
+            importance = context_only
+            # Subtle wording — never claim confirmation
+            reasons.append(f"LightGBM context: {top} is the dominant signal")
+
+    # Data-quality penalty — only kick in when the feed is actually degraded.
+    # A healthy feed (DQ > 0.7) should not silently drop confidence from 0.85
+    # to 0.74. Below 0.7 we taper the penalty linearly down to 0 at DQ=0.5.
+    if data_quality >= 0.7:
+        dq_penalty = 1.0
+    elif data_quality > 0.5:
+        dq_penalty = 0.5 + (data_quality - 0.5) / 0.4 * 0.5  # 0.5 → 1.0
+    else:
+        dq_penalty = 0.5  # floor — already short-circuited upstream
+
     snap = ForecastSnapshot(
         agent_id=agent_id,
         provider=provider,
         hours_to_shortage=hours,
-        confidence=conf * data_quality,  # degrade confidence on bad feed
+        confidence=conf * dq_penalty,
+        summary=primary.summary,  # curated one-line basis for UI / alert copy
         reasons_json=json.dumps(reasons),
         method=method,
         feature_importance_json=json.dumps(importance),

@@ -76,10 +76,16 @@ def rate_projection(
     points: List[Tuple[datetime, float]] = [(h.ts, h.balance) for h in history]
     drops: List[float] = []
     per_min_rates: List[float] = []
+    # Sub-minute intervals indicate the simulator wrote multiple history points
+    # inside one logical minute (e.g. several ticks per second). Clamping intervals
+    # to a sane minimum prevents 1-second intervals from producing astronomical
+    # burn rates — without this guard, a single outlier second dominates the
+    # whole 60-minute window.
+    MIN_INTERVAL_MIN = 0.5
     for i in range(1, len(points)):
         prev_ts, prev_bal = points[i - 1]
         cur_ts, cur_bal = points[i]
-        mins = max(0.001, (cur_ts - prev_ts).total_seconds() / 60.0)
+        mins = max(MIN_INTERVAL_MIN, (cur_ts - prev_ts).total_seconds() / 60.0)
         delta = prev_bal - cur_bal  # positive = outflow
         # Negative deltas are inflows (cash-in / commission). For *shortage* projection
         # we treat inflows as a pause in burn — clip to 0.
@@ -98,8 +104,21 @@ def rate_projection(
             window_minutes=window,
         )
 
-    avg_rate = sum(per_min_rates) / len(per_min_rates)
-    variance = pstdev(per_min_rates) if len(per_min_rates) > 1 else 0.0
+    # Outlier-resistant estimator: a single anomaly-injected huge outflow
+    # in the window (e.g. 100,000 BDT in one minute) would otherwise
+    # dominate the naive mean and project "~0 min to shortage" for a wallet
+    # that actually still has hours of buffer. Use median + cap, and use
+    # pstdev on the capped series so the confidence score reflects the
+    # burn rate the agent actually experiences.
+    sorted_rates = sorted(per_min_rates)
+    median_rate = sorted_rates[len(sorted_rates) // 2]
+    # Cap any per-minute rate at 10x the median — anything beyond that is
+    # almost certainly an anomaly event, not normal customer traffic.
+    BURN_CAP_MULTIPLIER = 10.0
+    cap = max(median_rate * BURN_CAP_MULTIPLIER, 1.0)
+    capped_rates = [min(r, cap) for r in per_min_rates]
+    avg_rate = sum(capped_rates) / len(capped_rates)
+    variance = pstdev(capped_rates) if len(capped_rates) > 1 else 0.0
     cv = (variance / avg_rate) if avg_rate > 0 else 1.0
     # tighter variance ⇒ higher confidence
     confidence = max(0.30, min(0.95, 0.95 - min(0.65, cv)))
@@ -119,6 +138,11 @@ def rate_projection(
     hours_left = minutes_left / 60.0
 
     reasons: List[str] = []
+    n_capped = sum(1 for r in per_min_rates if r > cap)
+    if n_capped > 0:
+        reasons.append(
+            f"capped {n_capped} outlier minute(s) above {cap:.0f} BDT/min to keep the projection honest"
+        )
     if avg_rate > 0:
         reasons.append(f"average burn rate {avg_rate:.0f} BDT/min over the last {window} min")
     if variance > 0:

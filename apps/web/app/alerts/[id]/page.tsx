@@ -36,10 +36,13 @@ export default function AlertDetailPage() {
             <div style={{ fontSize: 18, fontWeight: 700 }}>{data.title}</div>
             <div style={{ marginTop: 8, color: "#334155", lineHeight: 1.5 }}>{data.summary}</div>
           </div>
-          <div style={{ textAlign: "right", minWidth: 120 }}>
+          <div style={{ textAlign: "right", minWidth: 140 }}>
             <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase" }}>Priority</div>
             <div style={{ fontSize: 24, fontWeight: 700 }}>{data.priority_score}/100</div>
             <Confidence value={data.confidence} />
+            <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2, fontStyle: "italic" }}>
+              triage signal — not a fraud verdict
+            </div>
           </div>
         </div>
         <div style={{ marginTop: 10, fontSize: 12, color: "#64748b" }}>
@@ -48,14 +51,25 @@ export default function AlertDetailPage() {
       </Card>
 
       <Card style={{ marginBottom: 12 }}>
-        <h3 style={{ margin: 0, fontSize: 14 }}>Reasons</h3>
-        <ul style={{ marginTop: 6, paddingLeft: 18 }}>
+        <h3 style={{ margin: 0, fontSize: 14 }}>Why this was flagged — and why it may still be benign</h3>
+        <div style={{ marginTop: 6, fontSize: 12, color: "#475569", lineHeight: 1.5 }}>
+          Every reason and evidence line below is <b>supporting context</b> for your
+          review. The model surfaces patterns it cannot prove intent for — it is
+          not a fraud verdict and not a proof of wrongdoing. False positives
+          are expected; an honest review may find the pattern has a benign
+          explanation (e.g. salary day, festival, provider outage).
+        </div>
+        <ul style={{ marginTop: 8, paddingLeft: 18 }}>
           {data.reasons.map((r, i) => <li key={i} style={{ fontSize: 13, color: "#475569" }}>{r}</li>)}
         </ul>
       </Card>
 
       <Card style={{ marginBottom: 12 }}>
         <h3 style={{ margin: 0, fontSize: 14 }}>Evidence ({data.evidence.length})</h3>
+        <div style={{ marginTop: 4, fontSize: 11, color: "#64748b" }}>
+          Each entry below names the source (anomaly rule or forecast reason)
+          and the rule that fired it. Use it to reconstruct the trigger.
+        </div>
         <ul style={{ marginTop: 6, paddingLeft: 18 }}>
           {data.evidence.map((e, i) => (
             <li key={i} style={{ fontSize: 12, color: "#475569" }}>
@@ -102,8 +116,18 @@ export default function AlertDetailPage() {
             <p style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>
               Current state: <code>{data.case?.state || "none"}</code>. Only transitions you are permitted to perform are enabled — others are shown greyed.
             </p>
-            <AlertActionStrip alert={data} onChanged={mutate} />
-          </Card>
+            <AlertActionStrip alert={data} onChanged={mutate} />            <div style={{
+              marginTop: 12, padding: "10px 12px",
+              background: "#f1f5f9", border: "1px solid #cbd5e1",
+              borderRadius: 6, fontSize: 12, color: "#334155",
+            }}>
+              <b>Audit record.</b> Your decision (acknowledge, review, resolve,
+              escalate, decision, or close) is the final compliance ruling for
+              this case. It is timestamped and recorded on the case audit trail
+              above — escalation_engine auto-routing never decides outcomes.
+              Add a note explaining your reasoning; it is the only place your
+              justification is preserved.
+            </div>          </Card>
         </RoleGuard>
         {role !== "risk" && (
           <div style={{ marginTop: 12, fontSize: 12, color: "#94a3b8" }}>

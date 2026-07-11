@@ -36,10 +36,18 @@ export function StatusPill({ status }: { status: string }) {
 
 export function Confidence({ value, label }: { value: number; label?: string }) {
   const pct = Math.round(value * 100);
+  // Approximate uncertainty band — confidence is the model's self-reported
+  // certainty, *not* a fraud verdict. Show ±N% alongside so the reader can
+  // see the uncertainty explicitly. The tooltip repeats this so any analyst
+  // who hovers the pill gets the framing.
+  const uncertainty = pct >= 80 ? 5 : pct >= 55 ? 10 : 20;
   const color = pct >= 80 ? "#16a34a" : pct >= 55 ? "#ca8a04" : "#dc2626";
+  const tooltip = (label || "Confidence") +
+    " — the model's self-reported certainty, not proof of fraud. " +
+    `False positives are expected (roughly ±${uncertainty}%).`;
   return (
-    <span title={label || "Confidence"} style={{ fontSize: 12, color }}>
-      ● {pct}%{label ? ` ${label}` : ""}
+    <span title={tooltip} style={{ fontSize: 12, color }}>
+      ● {pct}% (±{uncertainty}%){label ? ` ${label}` : ""}
     </span>
   );
 }

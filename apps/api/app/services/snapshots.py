@@ -197,6 +197,7 @@ def agent_snapshot(session: Session, agent_id: int) -> dict:
             "burn_rate_per_min": rp.burn_rate_per_min,
             "hours_to_shortage": hours_to_shortage,
             "forecast_confidence": fc.confidence if fc else 0.0,
+            "forecast_summary": (fc.summary if fc else "") or (reasons[0] if reasons else ""),
             "forecast_reasons": reasons,
             "data_quality": fc.data_quality if fc else 1.0,
             "history": history,

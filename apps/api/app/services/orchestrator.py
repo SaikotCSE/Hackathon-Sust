@@ -149,13 +149,29 @@ def build_alert_for_provider(
     title = " · ".join(title_bits) or f"{provider.upper()} alert"
 
     summary_parts = []
+    # Prefer the curated `forecast.summary` (single human-readable basis line)
+    # over the legacy "Predicted shortage: 0.42h (61%)" string — that legacy
+    # form leaked jargon into alert copy. Fall back to a tiered one-liner so
+    # old snapshots without a `summary` field still render something useful.
+    curated = (getattr(forecast, "summary", "") or "").strip()
     if forecast.hours_to_shortage is not None:
-        summary_parts.append(f"Predicted shortage: {forecast.hours_to_shortage:.2f}h ({int(forecast.confidence*100)}%)")
+        if curated:
+            summary_parts.append(curated)
+        else:
+            hrs = forecast.hours_to_shortage
+            if hrs < 1:
+                summary_parts.append(f"draining fast — about {int(round(hrs*60))} min of buffer left")
+            elif hrs < 6:
+                summary_parts.append(f"elevated burn — about {hrs:.1f}h until depletion")
+            elif hrs < 24:
+                summary_parts.append(f"steady burn — comfortable for {hrs:.1f}h")
+            else:
+                summary_parts.append("low burn — no shortage expected in the next day")
     if anomaly_conf >= 0.5:
         summary_parts.append(f"Unusual pattern: {int(anomaly_conf*100)}% confidence")
     if data_quality < 0.7:
         summary_parts.append(f"Feed quality degraded: {data_quality:.2f}")
-    summary = " | ".join(summary_parts) or "Operating within normal range."
+    summary = " · ".join(summary_parts) or "Operating within normal range."
 
     evidence: List[dict] = []
     for ev in anomaly_events:

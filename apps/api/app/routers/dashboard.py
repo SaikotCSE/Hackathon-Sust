@@ -81,6 +81,7 @@ _OTHER_PROVIDER_NUMERIC_FIELDS = (
     "shortage_eta_human",
     "recent_deltas",
     "forecast_reasons",
+    "forecast_summary",
 )
 
 
@@ -625,5 +626,6 @@ def dashboard_series(
             "burn_rate_per_min": rp.burn_rate_per_min,
             "hours_to_shortage": rp.hours_to_shortage,
             "confidence": rp.confidence,
+            "summary": rp.summary,
         })
     return {"agent_id": agent_id, "series": out}

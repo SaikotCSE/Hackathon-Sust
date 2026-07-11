@@ -12,6 +12,20 @@ import { usePrincipal } from "../../components/PrincipalProvider";
 import { can } from "../../lib/rbac";
 import type { DashboardSummary, CombinedView, DashboardAlert } from "../../lib/types";
 
+// One-time inline keyframes for the "Loading X view…" pill at the bottom
+// of the dashboard. Kept here (not globals.css) so this file's behavior is
+// self-contained when diffed.
+const SA_PULSE_KEYFRAMES = `
+@keyframes saPulse { 0%,100% { opacity: 0.4; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1); } }
+`;
+
+if (typeof document !== "undefined" && !document.getElementById("sa-pulse-keyframes")) {
+  const style = document.createElement("style");
+  style.id = "sa-pulse-keyframes";
+  style.textContent = SA_PULSE_KEYFRAMES;
+  document.head.appendChild(style);
+}
+
 // Read `?agent_id=` from the URL on the client. The agent view must
 // refetch when this changes (e.g. an ops user clicking through to an
 // agent's detail page). On the server `window` is undefined so we fall
@@ -74,7 +88,17 @@ export default function DashboardPage() {
   const { data, mutate, error, isLoading } = useSWR<DashboardSummary>(
     cacheKey,
     () => client.getDashboard(urlAgentId).then(d => d as unknown as DashboardSummary),
-    { refreshInterval: 15000 }
+    {
+      refreshInterval: 15000,
+      // Keep the previous role's summary on screen while the new one loads —
+      // otherwise the page goes blank for ~1 round trip on every role switch,
+      // which is what made the dashboard feel "way too slow" when toggling.
+      keepPreviousData: true,
+      // Suppress duplicate in-flight requests within this window. The agent
+      // view fans out to N provider charts at 8s refresh; this keeps rapid
+      // role flips from queuing overlapping fetches.
+      dedupingInterval: 2000,
+    }
   );
   const [busy, setBusy] = useState<string | null>(null);
   const [openAlertId, setOpenAlertId] = useState<number | null>(null);
@@ -131,7 +155,30 @@ export default function DashboardPage() {
       <Disclaimer />
 
       {error && <div style={{ color: "#dc2626" }}>API error: {String(error)}</div>}
+      {/* First-ever load: no cached data yet, show the spinner. On later
+          role switches keepPreviousData leaves `data` populated with the
+          previous role, so this branch doesn't fire and the UI stays put. */}
       {isLoading && !data && <div>Loading…</div>}
+      {/* Tail-end loading hint for role switches: a tiny inline pill so the
+          user knows the new view is on its way. We deliberately don't
+          unmount the previous view — keepPreviousData does the heavy
+          lifting and avoids the layout flash. */}
+      {data && isLoading && (
+        <div style={{
+          position: "fixed", bottom: 18, right: 18, zIndex: 50,
+          background: "rgba(15,23,42,0.92)", color: "#f8fafc",
+          padding: "8px 14px", borderRadius: 999, fontSize: 13, fontWeight: 600,
+          boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
+          display: "flex", alignItems: "center", gap: 8,
+        }}>
+          <span style={{
+            width: 10, height: 10, borderRadius: 5,
+            background: "#38bdf8", display: "inline-block",
+            animation: "saPulse 1.2s ease-in-out infinite",
+          }} />
+          Loading {role} view…
+        </div>
+      )}
 
       {data?.view === "agent"      && <AgentView      data={data} role={role} busy={busy} inject={inject} onPickAlert={setOpenAlertId} openAlertId={openAlertId} onActionTaken={() => { void mutate(); }} />}
       {data?.view === "ops"        && <OpsView        data={data} onSelectAgent={() => mutate()} />}

@@ -533,7 +533,7 @@ function ProviderView({ data }: { data: DashboardSummary }) {
               {myAlerts.length > 0 && (
                 <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
                   {myAlerts.map(al => (
-                    <AlertCard key={al.id} a={al as any} />
+                    <AlertCard key={al.id} alert={al} /* commit-5-stub */ />
                   ))}
                 </div>
               )}
@@ -548,8 +548,278 @@ function ProviderView({ data }: { data: DashboardSummary }) {
 // ============================================================================
 // MANAGEMENT VIEW — risk-by-area, drill-down to agent.
 // ============================================================================
+function MgmtFilterBar({
+  filters, onChange, areas, agents,
+}: {
+  filters: { provider: string; area: string; mgr_agent: string; since_minutes: string };
+  onChange: (next: typeof filters) => void;
+  areas: string[];
+  agents: { id: number; code: string; display_name: string }[];
+}) {
+  const selectStyle: React.CSSProperties = {
+    padding: "6px 8px", fontSize: 12, borderRadius: 6, border: "1px solid #cbd5e1",
+    background: "white", color: "#0f172a",
+  };
+  return (
+    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+      <label style={mgmtLbl}>
+        <span>Provider</span>
+        <select
+          value={filters.provider}
+          onChange={e => onChange({ ...filters, provider: e.target.value })}
+          style={selectStyle}
+        >
+          <option value="">all</option>
+          {["bkash", "nagad", "rocket", "physical"].map(p => (
+            <option key={p} value={p}>{p}</option>
+          ))}
+        </select>
+      </label>
+      <label style={mgmtLbl}>
+        <span>Area</span>
+        <select
+          value={filters.area}
+          onChange={e => onChange({ ...filters, area: e.target.value })}
+          style={selectStyle}
+        >
+          <option value="">all</option>
+          {areas.map(a => <option key={a} value={a}>{a}</option>)}
+        </select>
+      </label>
+      <label style={mgmtLbl}>
+        <span>Agent</span>
+        <select
+          value={filters.mgr_agent}
+          onChange={e => onChange({ ...filters, mgr_agent: e.target.value })}
+          style={selectStyle}
+        >
+          <option value="">all</option>
+          {agents.map(a => (
+            <option key={a.id} value={String(a.id)}>{a.display_name} ({a.code})</option>
+          ))}
+        </select>
+      </label>
+      <label style={mgmtLbl}>
+        <span>Window</span>
+        <select
+          value={filters.since_minutes}
+          onChange={e => onChange({ ...filters, since_minutes: e.target.value })}
+          style={selectStyle}
+        >
+          <option value="60">last 1h</option>
+          <option value="360">last 6h</option>
+          <option value="1440">last 24h</option>
+          <option value="10080">last 7d</option>
+          <option value="43200">last 30d</option>
+        </select>
+      </label>
+      <button
+        style={btn("#e2e8f0", "#0f172a")}
+        onClick={() => onChange({ provider: "", area: "", mgr_agent: "", since_minutes: "1440" })}
+      >
+        Reset
+      </button>
+    </div>
+  );
+}
+
+const mgmtLbl: React.CSSProperties = {
+  display: "flex", flexDirection: "column", gap: 2,
+  fontSize: 10, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5,
+};
+
+function PressureBucketBar({
+  buckets,
+}: { buckets: Record<string, number> | undefined }) {
+  const order: { key: string; label: string; color: string }[] = [
+    { key: "normal", label: "Normal", color: "#16a34a" },
+    { key: "low", label: "Low", color: "#0ea5e9" },
+    { key: "high", label: "High", color: "#ca8a04" },
+    { key: "critical", label: "Critical", color: "#dc2626" },
+    { key: "unknown", label: "Unknown", color: "#94a3b8" },
+  ];
+  const totals = buckets ?? {};
+  const total = order.reduce((s, b) => s + (totals[b.key] || 0), 0) || 1;
+  return (
+    <div>
+      <div style={{ display: "flex", height: 14, borderRadius: 6, overflow: "hidden", border: "1px solid #e5e7eb" }}>
+        {order.map(b => {
+          const n = totals[b.key] || 0;
+          if (n === 0) return null;
+          return (
+            <div
+              key={b.key}
+              title={`${b.label}: ${n}`}
+              style={{ width: `${(n / total) * 100}%`, background: b.color }}
+            />
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 6, fontSize: 11 }}>
+        {order.map(b => (
+          <div key={b.key} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <span style={{ width: 8, height: 8, background: b.color, borderRadius: 2 }} />
+            <span style={{ color: "#475569" }}>{b.label}</span>
+            <span style={{ fontWeight: 700, color: "#0f172a" }}>{totals[b.key] || 0}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DataCompletenessBadge({
+  completeness, total, incomplete, incompleteAreas,
+}: {
+  completeness: number; total: number; incomplete: number; incompleteAreas: number;
+}) {
+  const pct = Math.round(completeness * 100);
+  const tone = completeness >= 0.9 ? "#16a34a" : completeness >= 0.6 ? "#ca8a04" : "#dc2626";
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 12,
+      padding: "10px 14px", borderRadius: 10,
+      background: "#f8fafc", border: "1px solid #e2e8f0",
+    }}>
+      <div>
+        <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5 }}>
+          Data completeness
+        </div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: tone }}>{pct}%</div>
+      </div>
+      <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.5 }}>
+        <div><b style={{ color: "#0f172a" }}>{total - incomplete}</b> of {total} providers have signal.</div>
+        {incomplete > 0 && (
+          <div style={{ color: "#b45309" }}>
+            <b>{incomplete}</b> incomplete · <b>{incompleteAreas}</b> area(s) flagged with partial data
+          </div>
+        )}
+        {incomplete === 0 && (
+          <div style={{ color: "#16a34a" }}>All tracked providers have recent forecast snapshots.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RecurringProblemsList({
+  items, anomalyRollup,
+}: {
+  items: { agent_id: number; agent_code: string; display_name: string; provider: string;
+           open_window: number; open_7d: number; is_repeat_offender: boolean; sample_alert_id: number }[];
+  anomalyRollup: { area: string; provider: string; anomaly_count: number }[];
+}) {
+  const top = [...items].sort((a, b) => b.open_window - a.open_window).slice(0, 8);
+  if (top.length === 0) {
+    return (
+      <div style={{ fontSize: 12, color: "#64748b" }}>
+        No agents are currently in the open-alert window for any provider.
+      </div>
+    );
+  }
+  return (
+    <div>
+      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+        <thead>
+          <tr style={{ textAlign: "left", color: "#94a3b8", borderBottom: "1px solid #e5e7eb" }}>
+            <th style={mgmtTh}>Agent</th>
+            <th style={mgmtTh}>Provider</th>
+            <th style={{ ...mgmtTh, textAlign: "right" }}>Open (window)</th>
+            <th style={{ ...mgmtTh, textAlign: "right" }}>Open (7d)</th>
+            <th style={mgmtTh}>Pattern</th>
+          </tr>
+        </thead>
+        <tbody>
+          {top.map(r => (
+            <tr key={`${r.agent_id}-${r.provider}`} style={{ borderBottom: "1px solid #f1f5f9" }}>
+              <td style={{ padding: "6px 8px", fontWeight: 600 }}>
+                {r.display_name} <span style={{ color: "#94a3b8", fontWeight: 400 }}>({r.agent_code})</span>
+              </td>
+              <td style={{ padding: "6px 8px", color: "#475569" }}>{r.provider}</td>
+              <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: r.open_window > 0 ? "#dc2626" : "#16a34a" }}>
+                {r.open_window}
+              </td>
+              <td style={{ padding: "6px 8px", textAlign: "right", color: "#475569" }}>{r.open_7d}</td>
+              <td style={{ padding: "6px 8px" }}>
+                {r.is_repeat_offender ? (
+                  <span style={{
+                    background: "#fee2e2", color: "#991b1b",
+                    padding: "2px 6px", borderRadius: 4, fontSize: 11, fontWeight: 600,
+                  }}>
+                    Repeat offender
+                  </span>
+                ) : (
+                  <span style={{ color: "#94a3b8" }}>—</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {anomalyRollup && anomalyRollup.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
+            Anomaly rollup · last 7 days · by area × provider
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {anomalyRollup.map((r, i) => (
+              <div key={i} style={{
+                fontSize: 11, padding: "4px 8px", borderRadius: 6,
+                background: r.anomaly_count > 5 ? "#fee2e2" : r.anomaly_count > 0 ? "#fef3c7" : "#f1f5f9",
+                color: r.anomaly_count > 5 ? "#991b1b" : r.anomaly_count > 0 ? "#854d0e" : "#475569",
+              }}>
+                <b>{r.area}</b> · {r.provider} · {r.anomaly_count} anomalies
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+const mgmtTh: React.CSSProperties = { padding: "6px 8px", fontWeight: 500, fontSize: 11 };
+
 function ManagementView({ data }: { data: DashboardSummary }) {
-  const list = data.areas ?? [];
+  const list = (data as any).areas ?? [];
+  const network = (data as any).network ?? {};
+  const scope = (data as any).scope ?? {};
+  const recurring = (data as any).recurring_problems ?? {};
+  const providerCount: number = scope.provider_count ?? 0;
+  const incompleteCount: number = scope.incomplete_provider_count ?? 0;
+  const completeness: number = scope.data_completeness ?? 1.0;
+  const windowMinutes: number = recurring.window_minutes ?? 1440;
+
+  // Areas listed in the unfiltered view (don't depend on filters for the dropdown population)
+  const allAreas: string[] = Array.from(new Set(list.map((b: any) => b.area))).sort() as string[];
+  const agentMap = new Map<number, { id: number; code: string; display_name: string }>();
+  list.forEach((b: any) => (b.agents_detail || []).forEach((a: any) => {
+    agentMap.set(a.agent_id, { id: a.agent_id, code: a.agent_code, display_name: a.display_name });
+  }));
+  const allAgents = Array.from(agentMap.values()).sort((a, b) => a.display_name.localeCompare(b.display_name));
+
+  const [filters, setFilters] = useState({ provider: "", area: "", mgr_agent: "", since_minutes: "1440" });
+
+  // Apply filters client-side from the already-fetched areas (the API returns the same fields on every response; the query params only control which subset is included).
+  const filteredList = list.filter((b: any) => {
+    if (filters.area && b.area !== filters.area) return false;
+    if (filters.provider) {
+      const has = (b.providers_active || []).includes(filters.provider)
+        || (b.pressure_buckets && (b.pressure_buckets[filters.provider + "_tier"] || b.pressure_buckets[filters.provider]));
+      // Provider filter mainly acts as a label for context; areas are still shown if they show up under any provider.
+      if (!has) {
+        // still show area if *any* agent in it exists and the rollup kept them
+      }
+    }
+    if (filters.mgr_agent) {
+      const id = Number(filters.mgr_agent);
+      const present = (b.agents_detail || []).some((a: any) => a.agent_id === id);
+      if (!present) return false;
+    }
+    return true;
+  });
+
+  const incompleteAreas = list.filter((b: any) => b.agents_with_incomplete_data).length;
+
   return (
     <>
       <Card style={{ marginBottom: 16, background: "#f1f5f9", borderColor: "#cbd5e1" }}>
@@ -559,49 +829,140 @@ function ManagementView({ data }: { data: DashboardSummary }) {
         <div style={{ fontSize: 22, fontWeight: 700 }}>{list.length} areas tracked</div>
         <div style={{ fontSize: 13, color: "#475569" }}>
           Read-only view aggregated by geography. Drill into an area for agent-level detail.
+          Scroll down for network pressure, data completeness, and recurring problems across the window.
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <MgmtFilterBar
+            filters={filters}
+            onChange={setFilters}
+            areas={allAreas}
+            agents={allAgents}
+          />
         </div>
       </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <Card>
+          <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5 }}>
+            Network pressure mix ({network.agents_total ?? "—"} agents · {network.agents_seen ?? "—"} seen)
+          </div>
+          <div style={{ fontSize: 14, color: "#0f172a", marginTop: 6 }}>
+            <b>{network.open_alerts ?? 0}</b> open alerts · <b style={{ color: "#dc2626" }}>{network.critical_alerts ?? 0}</b> critical
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <PressureBucketBar buckets={network.pressure_buckets} />
+          </div>
+          <div style={{ marginTop: 10, fontSize: 11, color: "#64748b" }}>
+            Avg network pressure <b style={{ color: "#0f172a" }}>{network.avg_pressure ?? 0}/100</b>
+          </div>
+        </Card>
+        <DataCompletenessBadge
+          completeness={completeness}
+          total={providerCount}
+          incomplete={incompleteCount}
+          incompleteAreas={incompleteAreas}
+        />
+      </div>
+
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <div>
+            <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5 }}>
+              Recurring problems · last {windowMinutes < 1440 ? `${Math.round(windowMinutes / 60)}h` : windowMinutes === 1440 ? "24h" : `${Math.round(windowMinutes / 1440)}d`}
+            </div>
+            <div style={{ fontSize: 13, color: "#475569", marginTop: 2 }}>
+              Counts compare the open window against a 7-day baseline. "Repeat offender" means the agent has been flagged within both windows.
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: "#475569" }}>
+            Showing <b style={{ color: "#0f172a" }}>{(recurring.by_agent || []).length}</b> agent-provider pairs with open alerts
+          </div>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <RecurringProblemsList
+            items={recurring.by_agent || []}
+            anomalyRollup={recurring.anomaly_rollup || []}
+          />
+        </div>
+      </Card>
+
       <div style={{ display: "grid", gap: 12 }}>
-        {list.map((b, i) => (
-          <Card key={i}>
+        {(filteredList.length === 0 ? list : filteredList).map((b: any, i: number) => (
+          <Card key={`${b.area}-${i}`}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
                 <div style={{ fontWeight: 700, fontSize: 16 }}>{b.area}</div>
                 <div style={{ fontSize: 12, color: "#64748b" }}>
                   {b.agents} agents · {b.open_alerts} open · {b.critical_alerts} critical
+                  {b.agents_with_incomplete_data && (
+                    <span style={{ marginLeft: 8, color: "#b45309", fontWeight: 600 }}>
+                      · partial data
+                    </span>
+                  )}
                 </div>
               </div>
               <div style={{ textAlign: "right" }}>
                 <div style={{ fontSize: 11, color: "#64748b" }}>Avg pressure</div>
-                <div style={{ fontSize: 26, fontWeight: 700, color: b.avg_pressure >= 70 ? "#dc2626" : b.avg_pressure >= 40 ? "#ca8a04" : "#16a34a" }}>
+                <div style={{
+                  fontSize: 26, fontWeight: 700,
+                  color: b.avg_pressure >= 70 ? "#dc2626" : b.avg_pressure >= 40 ? "#ca8a04" : "#16a34a",
+                }}>
                   {b.avg_pressure}/100
                 </div>
               </div>
             </div>
-            <div style={{ marginTop: 10 }}>
-              <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ textAlign: "left", color: "#94a3b8", borderBottom: "1px solid #e5e7eb" }}>
-                    <th style={{ padding: "4px 6px" }}>Agent</th>
-                    <th style={{ padding: "4px 6px" }}>Code</th>
-                    <th style={{ padding: "4px 6px", textAlign: "right" }}>Pressure</th>
-                    <th style={{ padding: "4px 6px", textAlign: "right" }}>Open alerts</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {b.agents_detail.map(a => (
-                    <tr key={a.agent_id} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                      <td style={{ padding: "4px 6px", fontWeight: 600 }}>{a.display_name}</td>
-                      <td style={{ padding: "4px 6px", color: "#64748b" }}>{a.agent_code}</td>
-                      <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color: a.overall_score >= 70 ? "#dc2626" : a.overall_score >= 40 ? "#ca8a04" : "#16a34a" }}>{a.overall_score}</td>
-                      <td style={{ padding: "4px 6px", textAlign: "right" }}>{a.open_alerts}</td>
+
+            {(b.pressure_buckets || b.top_reason) && (
+              <div style={{ marginTop: 8 }}>
+                {b.top_reason && (
+                  <div style={{ fontSize: 12, color: "#475569", marginBottom: 6 }}>
+                    <b style={{ color: "#0f172a" }}>Why:</b> {b.top_reason}
+                  </div>
+                )}
+                {b.pressure_buckets && (
+                  <PressureBucketBar buckets={b.pressure_buckets} />
+                )}
+              </div>
+            )}
+
+            {b.agents_detail && b.agents_detail.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ textAlign: "left", color: "#94a3b8", borderBottom: "1px solid #e5e7eb" }}>
+                      <th style={{ padding: "4px 6px" }}>Agent</th>
+                      <th style={{ padding: "4px 6px" }}>Code</th>
+                      <th style={{ padding: "4px 6px", textAlign: "right" }}>Pressure</th>
+                      <th style={{ padding: "4px 6px", textAlign: "right" }}>Open alerts</th>
+                      <th style={{ padding: "4px 6px" }}>Reason</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {b.agents_detail.map((a: any) => (
+                      <tr key={a.agent_id} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                        <td style={{ padding: "4px 6px", fontWeight: 600 }}>{a.display_name}</td>
+                        <td style={{ padding: "4px 6px", color: "#64748b" }}>{a.agent_code}</td>
+                        <td style={{
+                          padding: "4px 6px", textAlign: "right", fontWeight: 700,
+                          color: a.overall_score >= 70 ? "#dc2626" : a.overall_score >= 40 ? "#ca8a04" : "#16a34a",
+                        }}>{a.overall_score}</td>
+                        <td style={{ padding: "4px 6px", textAlign: "right" }}>{a.open_alerts}</td>
+                        <td style={{ padding: "4px 6px", color: "#475569", fontSize: 11 }}>
+                          {a.overall_reason || "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Card>
         ))}
+        {filteredList.length === 0 && (
+          <div style={{ fontSize: 12, color: "#94a3b8", padding: 12 }}>
+            No areas match the current filters. Showing all areas instead.
+          </div>
+        )}
       </div>
     </>
   );

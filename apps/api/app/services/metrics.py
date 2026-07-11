@@ -90,6 +90,7 @@ def _liquidity_mae_and_lead(session: Session, scenarios: List[ScenarioEvent]) ->
             .where(ForecastSnapshot.hours_to_shortage != None)  # noqa: E711
             .where(ForecastSnapshot.ts >= s.injected_at)
             .order_by(ForecastSnapshot.ts)
+            .limit(1)
         ).first()
         if first_forecast is None or first_forecast.hours_to_shortage is None:
             continue
@@ -102,6 +103,7 @@ def _liquidity_mae_and_lead(session: Session, scenarios: List[ScenarioEvent]) ->
             .where(BalanceHistory.balance <= threshold)
             .where(BalanceHistory.ts >= s.injected_at)
             .order_by(BalanceHistory.ts)
+            .limit(1)
         ).first()
         if actual is None:
             continue
@@ -119,11 +121,22 @@ def _liquidity_mae_and_lead(session: Session, scenarios: List[ScenarioEvent]) ->
 # ---------------------------------------------------------------------------
 
 def _confidence_delta(session: Session) -> float:
+    # Cap each side at a window-bounded sample so the metric stays
+    # responsive as the forecast table grows.
+    window_start = datetime.utcnow() - timedelta(hours=24)
     healthy = session.exec(
-        select(ForecastSnapshot.confidence).where(ForecastSnapshot.data_quality >= 0.95)
+        select(ForecastSnapshot.confidence)
+        .where(ForecastSnapshot.data_quality >= 0.95)
+        .where(ForecastSnapshot.ts >= window_start)
+        .order_by(ForecastSnapshot.ts.desc())
+        .limit(500)
     ).all()
     degraded = session.exec(
-        select(ForecastSnapshot.confidence).where(ForecastSnapshot.data_quality < 0.7)
+        select(ForecastSnapshot.confidence)
+        .where(ForecastSnapshot.data_quality < 0.7)
+        .where(ForecastSnapshot.ts >= window_start)
+        .order_by(ForecastSnapshot.ts.desc())
+        .limit(500)
     ).all()
     if not healthy or not degraded:
         return 0.0
@@ -163,9 +176,30 @@ def _priority_alignment(scenarios: List[ScenarioEvent], alerts: List[Alert]) -> 
 
 def compute_metrics(session: Session) -> MetricsSnapshot:
     now = datetime.utcnow()
-    scenarios = session.exec(select(ScenarioEvent)).all()
-    anomaly_events = session.exec(select(AnomalyEvent)).all()
-    alerts = session.exec(select(Alert)).all()
+    # Bound the rows we materialize: metric semantics are "last 24h of
+    # activity". Without this, a long-running demo session causes the
+    # /metrics endpoint to scan every row ever written, on every call.
+    _METRICS_WINDOW_HOURS = 24
+    _METRICS_HARD_CAP = 2000
+    window_start = now - timedelta(hours=_METRICS_WINDOW_HOURS)
+    scenarios = session.exec(
+        select(ScenarioEvent)
+        .where(ScenarioEvent.injected_at >= window_start)
+        .order_by(ScenarioEvent.injected_at.desc())
+        .limit(_METRICS_HARD_CAP)
+    ).all()
+    anomaly_events = session.exec(
+        select(AnomalyEvent)
+        .where(AnomalyEvent.ts >= window_start)
+        .order_by(AnomalyEvent.ts.desc())
+        .limit(_METRICS_HARD_CAP)
+    ).all()
+    alerts = session.exec(
+        select(Alert)
+        .where(Alert.created_at >= window_start)
+        .order_by(Alert.created_at.desc())
+        .limit(_METRICS_HARD_CAP)
+    ).all()
     latency_rows = session.exec(select(MetricTick).where(MetricTick.name == "api_latency_ms").order_by(MetricTick.ts.desc()).limit(200)).all()
     latencies = [r.value for r in latency_rows]
 

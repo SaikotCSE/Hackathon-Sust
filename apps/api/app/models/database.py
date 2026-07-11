@@ -9,6 +9,7 @@ from typing import List, Optional
 
 from sqlmodel import Field, SQLModel, JSON, Column
 from sqlmodel import Relationship
+from sqlalchemy import Index
 from sqlalchemy.orm import Mapped, relationship as sa_relationship
 
 
@@ -68,6 +69,12 @@ class Transaction(SQLModel, table=True):
     flagged: bool = False
     ground_truth_anomaly: bool = False  # injected scenario labels
 
+    __table_args__ = (
+        # Dominant access pattern: "recent transactions for this (agent, provider)",
+        # used by every rule head and the Isolation Forest fit.
+        Index("ix_tx_agent_provider_ts", "agent_id", "provider", "ts"),
+    )
+
 
 class BalanceHistory(SQLModel, table=True):
     """Time-series snapshot of provider balance for sparklines + ML training."""
@@ -80,6 +87,13 @@ class BalanceHistory(SQLModel, table=True):
     balance: float
     physical_cash: float
     ts: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        # Sparklines, LGBM training, and rate projection all filter on
+        # (agent, provider, ts DESC) — composite index lets the planner
+        # use a single index range scan instead of three.
+        Index("ix_bh_agent_provider_ts", "agent_id", "provider", "ts"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +115,12 @@ class ForecastSnapshot(SQLModel, table=True):
     data_quality: float = 1.0  # 0..1, 1 = healthy
     ts: datetime = Field(default_factory=datetime.utcnow, index=True)
 
+    __table_args__ = (
+        # Dashboard batch loader fetches the most recent forecast per
+        # (agent, provider) — composite keeps the LIMIT cheap.
+        Index("ix_fc_agent_provider_ts", "agent_id", "provider", "ts"),
+    )
+
 
 class AnomalyEvent(SQLModel, table=True):
     __tablename__ = "anomaly_events"
@@ -116,6 +136,12 @@ class AnomalyEvent(SQLModel, table=True):
     reasons_json: str = "[]"
     iforest_score: Optional[float] = None
     ts: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        # Metrics page groups anomalies per provider within a time window;
+        # composite keeps the WHERE+ORDER BY cheap.
+        Index("ix_ae_agent_provider_ts", "agent_id", "provider", "ts"),
+    )
 
 
 # ---------------------------------------------------------------------------

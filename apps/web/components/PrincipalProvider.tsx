@@ -2,7 +2,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { client } from "../lib/client";
-import type { UserInfo } from "../lib/types";
 
 export interface Principal {
   username: string;

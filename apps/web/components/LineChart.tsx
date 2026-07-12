@@ -42,7 +42,6 @@ function pad2(n: number): string { return String(n).padStart(2, "0"); }
 /** Choose label format based on span in ms. */
 function pickTimeFmt(spanMs: number): (d: Date) => string {
   const H = 3600 * 1000;
-  const D = 24 * H;
   if (spanMs <= 6 * H)      return (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   if (spanMs <= 48 * H)     return (d) => `${DOW[d.getDay()]} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   return (d) => `${MONTHS[d.getMonth()]} ${pad2(d.getDate())}`;
@@ -83,7 +82,6 @@ export function LineChart({
   title,
 }: LineChartProps) {
   const points = (data ?? []).slice();
-  const tsLen = timestamps?.length ?? 0;
 
   if (points.length === 0) {
     return (
@@ -100,7 +98,6 @@ export function LineChart({
 
   // Y-domain
   let maxRaw = Math.max(...points, 1);
-  let minRaw = Math.min(...points, 0);
   // For projection, extend range down to depletion point.
   let projSteps = 0;
   if (showProjection && burnRatePerMin > 0 && points.length >= 2) {
@@ -108,7 +105,6 @@ export function LineChart({
     const minutesLeft = last / burnRatePerMin;
     const capMin = 30 * 24 * 60; // cap projection at 30 days for safety
     const projected = Math.max(0, last - burnRatePerMin * Math.min(minutesLeft, capMin));
-    minRaw = Math.min(minRaw, projected);
     if (projected === 0) maxRaw = Math.max(maxRaw, last * 1.05);
   }
   // Always start y-axis at 0 for currency (cash is never negative).
@@ -137,7 +133,6 @@ export function LineChart({
   // Projection: expressed as additional steps in the time-domain.
   if (showProjection && burnRatePerMin > 0 && useTimeAxis && spanMs > 0) {
     const projMs = (points[points.length - 1] / burnRatePerMin) * 60_000;
-    const capMs = 30 * 24 * 3600_000;
     projSteps = Math.max(0, Math.min(1, projMs / spanMs));
   }
 

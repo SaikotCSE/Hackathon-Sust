@@ -66,12 +66,6 @@ function fmtBurn(rate: number): string {
   return `৳${Math.round(rate)}/min`;
 }
 
-/** Position of the "now" marker along the 0..1 strip. */
-function urgencyT(hours: number | null): number {
-  if (hours == null) return 0.15;
-  return Math.min(Math.max(hours, 0), 72) / 72;
-}
-
 export function ForecastTimeline({
   providerKey,
   burnRatePerMin,

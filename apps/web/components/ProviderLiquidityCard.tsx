@@ -14,10 +14,6 @@ const PROVIDER_STYLE: Record<string, { dot: string; title: string; subtitle: str
 const HEALTH_BG: Record<string, string> = {
   normal: "#dcfce7", low: "#fef9c3", medium: "#ffedd5", high: "#ffedd5", critical: "#fee2e2", unknown: "#e5e7eb",
 };
-const HEALTH_FG: Record<string, string> = {
-  normal: "#166534", low: "#854d0e", medium: "#9a3412", high: "#9a3412", critical: "#991b1b", unknown: "#374151",
-};
-
 function fmtBDT(n: number | null | undefined): string {
   if (n == null) return "—";
   if (Math.abs(n) >= 1000) return `৳${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;

@@ -13,7 +13,6 @@ const NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", show: () => true },
   { href: "/alerts",    label: "Alerts",    show: () => true },
   { href: "/cases",     label: "Cases",     show: (r) => can(r, "can_view_cases") },
-  { href: "/metrics",   label: "Metrics",   show: (r) => can(r, "can_view_metrics") },
 ];
 
 const ROLE_BADGE: Record<string, { bg: string; fg: string }> = {

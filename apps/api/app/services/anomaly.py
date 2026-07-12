@@ -185,7 +185,9 @@ def rule_balance_anomaly(session: Session, agent_id: int, provider: str) -> Opti
         .where(Transaction.ts <= current.ts)
         .where(Transaction.status == "success")
     ).all()
-    explained_drop = sum(t.amount if t.tx_type == "cash_out" else -t.amount for t in matching)
+    # Provider e-money moves opposite to physical cash from the agent's view:
+    # cash-in consumes e-money, while cash-out replenishes it.
+    explained_drop = sum(t.amount if t.tx_type == "cash_in" else -t.amount for t in matching)
     unexplained_drop = last_drop - explained_drop
     if last_drop > avg + 2 * sd and unexplained_drop > 5000:
         confidence = min(0.88, 0.55 + abs(unexplained_drop) / 50000.0)

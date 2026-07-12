@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timedelta
 
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.models.database import Agent, OperationalContextEvent, ProviderBalance, ScenarioEvent, Transaction
 from app.services.anomaly import detect_anomalies
@@ -58,6 +58,44 @@ class AnomalyDetectionTests(unittest.TestCase):
         second.tick(n_transactions=6)
         events = detect_anomalies(self.session, self.agent_id, "bkash")
         self.assertIn("structuring", {event.rule for event in events})
+
+    def test_agent_cash_and_provider_emoney_move_in_opposite_directions(self):
+        before_bkash = self.session.exec(
+            select(ProviderBalance)
+            .where(ProviderBalance.agent_id == self.agent_id)
+            .where(ProviderBalance.provider == "bkash")
+        ).one().balance
+        before_physical = self.session.exec(
+            select(ProviderBalance)
+            .where(ProviderBalance.agent_id == self.agent_id)
+            .where(ProviderBalance.provider == "physical")
+        ).one().balance
+        SimulationEngine(self.session, self.agent_id).inject_scenario(ScenarioSpec(
+            kind="bkash_surge", label="bKash cash-in demand", provider="bkash",
+            intended_severity="critical", duration_minutes=5,
+        ))
+        txs = SimulationEngine(self.session, self.agent_id).tick(n_transactions=1)
+        self.assertEqual((txs[0].provider, txs[0].tx_type), ("bkash", "cash_in"))
+        after_bkash = self.session.exec(
+            select(ProviderBalance)
+            .where(ProviderBalance.agent_id == self.agent_id)
+            .where(ProviderBalance.provider == "bkash")
+        ).one().balance
+        after_physical = self.session.exec(
+            select(ProviderBalance)
+            .where(ProviderBalance.agent_id == self.agent_id)
+            .where(ProviderBalance.provider == "physical")
+        ).one().balance
+        self.assertLess(after_bkash, before_bkash)
+        self.assertGreater(after_physical, before_physical)
+
+    def test_salary_day_stays_with_selected_provider(self):
+        SimulationEngine(self.session, self.agent_id).inject_scenario(ScenarioSpec(
+            kind="salary_day", label="Nagad salary day", provider="nagad",
+            intended_severity="normal", duration_minutes=5,
+        ))
+        txs = SimulationEngine(self.session, self.agent_id).tick(n_transactions=8)
+        self.assertEqual({tx.provider for tx in txs}, {"nagad"})
 
     def test_ground_truth_label_is_not_a_detector_input(self):
         self.session.add(ScenarioEvent(

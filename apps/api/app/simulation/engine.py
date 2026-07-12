@@ -173,8 +173,11 @@ class SimulationEngine:
             )
             self.session.add(tx)
             txs.append(tx)
-            # Apply the effect on the provider balance
-            delta = -amount if tx_type == "cash_out" else amount
+            # Agent-side accounting keeps provider e-money and physical cash
+            # separate and moving in opposite directions:
+            #   cash-out: customer sends e-money to agent; agent gives cash
+            #   cash-in:  customer gives cash; agent sends e-money
+            delta = amount if tx_type == "cash_out" else -amount
             balances[provider] = max(0.0, balances.get(provider, 0.0) + delta)
             pb = self.session.exec(
                 select(ProviderBalance).where(ProviderBalance.agent_id == self.agent_id).where(ProviderBalance.provider == provider)
@@ -224,18 +227,20 @@ class SimulationEngine:
         active = self.active_scenarios
         current = max(active, key=lambda s: s["started_at"]) if active else None
         if current and current["kind"] == "bkash_surge" and current["provider"] == "bkash":
-            return ("bkash", "cash_out", random.randint(4000, 6500), random.choice(self.counterparties))
+            # Sustained cash-in demand consumes the outlet's bKash e-money
+            # position while replenishing physical cash.
+            return ("bkash", "cash_in", random.randint(4000, 6500), random.choice(self.counterparties))
         if current and current["kind"] == "repeated_amount":
             return (current["provider"],
                     random.choice(["cash_in", "cash_out"]),
                     2375, random.choice(self.counterparties))
         if current and current["kind"] == "structuring":
-            return ("bkash", "cash_out", random.choice([4950, 4970, 5000, 5030, 5050]),
+            return (current["provider"], "cash_out", random.choice([4950, 4970, 5000, 5030, 5050]),
                     random.choice(self.counterparties))
         if current and current["kind"] == "salary_day":
             # Legitimate high-volume context: deliberately diverse amounts and
             # counterparties, avoiding the near-5,000 test band.
-            return (random.choice(list(PROVIDERS)),
+            return (current["provider"],
                     random.choices(["cash_in", "cash_out"], weights=[0.65, 0.35])[0],
                     float(random.choice([700, 1100, 1750, 2400, 3200, 6800, 7600, 9200])),
                     random.choice(self.counterparties))

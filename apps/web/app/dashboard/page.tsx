@@ -1,7 +1,7 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import useSWR from "swr";
-import { client } from "../../lib/client";
+import { client, type ScenarioKind } from "../../lib/client";
 import { Card, Disclaimer, PageHeader } from "../../components/Primitives";
 import { AlertCard } from "../../components/AlertCard";
 import { ProviderLiquidityCard } from "../../components/ProviderLiquidityCard";
@@ -37,12 +37,86 @@ function readAgentIdFromUrl(): number {
   return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
-const SCENARIOS = [
-  { kind: "bkash_surge",      label: "Inject: bKash surge (critical liquidity)",   color: "#dc2626" },
-  { kind: "repeated_amount",  label: "Inject: Repeated amounts (anomaly)",         color: "#7c3aed" },
-  { kind: "structuring",      label: "Inject: Structuring near 5,000 BDT",          color: "#9333ea" },
-  { kind: "rocket_delay",     label: "Inject: Rocket feed delay (data quality)",    color: "#0891b2" },
-  { kind: "salary_day",       label: "Inject: Salary day (legit spike — should NOT alert)", color: "#16a34a" },
+type DemoScenario = {
+  kind: ScenarioKind;
+  category: string;
+  title: string;
+  provider: "bkash" | "nagad" | "rocket";
+  description: string;
+  expected: string;
+  intendedSeverity: "normal" | "low" | "high" | "critical";
+  isAnomaly: boolean;
+  accent: string;
+  tint: string;
+};
+
+type ScenarioFeedback = {
+  tone: "success" | "error";
+  title: string;
+  detail: string;
+} | null;
+
+const SCENARIOS: readonly DemoScenario[] = [
+  {
+    kind: "bkash_surge",
+    category: "Liquidity pressure",
+    title: "bKash e-money drawdown",
+    provider: "bkash",
+    description: "Simulates sustained customer demand that rapidly reduces the outlet's separate bKash position.",
+    expected: "Forecast an approximate shortage time and route a safe Operations response.",
+    intendedSeverity: "critical",
+    isAnomaly: false,
+    accent: "#dc2626",
+    tint: "#fff1f2",
+  },
+  {
+    kind: "repeated_amount",
+    category: "Unusual behavior",
+    title: "Repeated Nagad amounts",
+    provider: "nagad",
+    description: "Creates several near-identical transactions from synthetic counterparties in a short window.",
+    expected: "Show record-level evidence, uncertainty, and a human-review recommendation.",
+    intendedSeverity: "high",
+    isAnomaly: true,
+    accent: "#7c3aed",
+    tint: "#f5f3ff",
+  },
+  {
+    kind: "structuring",
+    category: "Pattern requiring review",
+    title: "Amounts near ৳5,000",
+    provider: "bkash",
+    description: "Creates a clustered threshold pattern without asserting intent or wrongdoing.",
+    expected: "Explain why the pattern was flagged and why a benign explanation remains possible.",
+    intendedSeverity: "high",
+    isAnomaly: true,
+    accent: "#9333ea",
+    tint: "#faf5ff",
+  },
+  {
+    kind: "rocket_delay",
+    category: "Data-quality fallback",
+    title: "Delayed Rocket feed",
+    provider: "rocket",
+    description: "Marks the Rocket provider feed as late before the next analytical cycle.",
+    expected: "Pause unsupported projections, lower confidence, and identify the feed owner.",
+    intendedSeverity: "low",
+    isAnomaly: false,
+    accent: "#0891b2",
+    tint: "#ecfeff",
+  },
+  {
+    kind: "salary_day",
+    category: "Legitimate-demand control",
+    title: "Nagad salary-day volume",
+    provider: "nagad",
+    description: "Creates diverse high-volume activity with an observed salary-calendar context.",
+    expected: "Avoid elevating compatible volume alone; genuine repeated or reconciliation patterns still run.",
+    intendedSeverity: "normal",
+    isAnomaly: false,
+    accent: "#15803d",
+    tint: "#f0fdf4",
+  },
 ] as const;
 
 export default function DashboardPage() {
@@ -102,17 +176,49 @@ export default function DashboardPage() {
   );
   const [busy, setBusy] = useState<string | null>(null);
   const [openAlertId, setOpenAlertId] = useState<number | null>(null);
+  const [scenarioFeedback, setScenarioFeedback] = useState<ScenarioFeedback>(null);
 
   async function tick() {
     setBusy("tick");
-    try { await client.tickSimulation(); mutate(); }
+    try {
+      await client.tickSimulation();
+      await mutate();
+    }
     finally { setBusy(null); }
   }
-  async function inject(kind: string, provider?: string) {
-    setBusy(kind);
+  async function inject(scenario: DemoScenario) {
+    setBusy(scenario.kind);
+    setScenarioFeedback(null);
     try {
-      await client.injectScenario({ kind: kind as any, provider, duration_minutes: 8 });
-      mutate();
+      await client.injectScenario({
+        kind: scenario.kind,
+        label: scenario.title,
+        provider: scenario.provider,
+        intended_severity: scenario.intendedSeverity,
+        is_anomaly: scenario.isAnomaly,
+        duration_minutes: 8,
+      });
+      // A scenario record alone does not produce evidence. Advance one full
+      // analytical cycle so every demo button has an immediate, observable result.
+      const cycle = await client.tickSimulation();
+      await mutate();
+      const alertText = cycle.new_alerts.length === 1
+        ? "1 advisory alert created or refreshed"
+        : `${cycle.new_alerts.length} advisory alerts created or refreshed`;
+      const qualityText = scenario.kind === "rocket_delay"
+        ? ` · Rocket feed quality ${Math.round((cycle.data_quality.rocket ?? 0) * 100)}%`
+        : "";
+      setScenarioFeedback({
+        tone: "success",
+        title: `${scenario.title} completed`,
+        detail: `${cycle.ticked} synthetic transactions analyzed · ${alertText}${qualityText}. No real financial action was executed.`,
+      });
+    } catch (e: any) {
+      setScenarioFeedback({
+        tone: "error",
+        title: `${scenario.title} could not run`,
+        detail: String(e?.message || e),
+      });
     } finally { setBusy(null); }
   }
 
@@ -146,7 +252,7 @@ export default function DashboardPage() {
         subtitle={headerSub}
         right={can(role, "can_inject_scenario") && (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button onClick={tick} disabled={busy === "tick"} style={btn("#0f172a", "#fff")}>
+            <button onClick={tick} disabled={busy !== null} style={btn("#0f172a", "#fff")}>
               {busy === "tick" ? "Ticking…" : "Tick simulation"}
             </button>
           </div>
@@ -180,7 +286,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {data?.view === "agent"      && <AgentView      data={data} role={role} busy={busy} inject={inject} onPickAlert={setOpenAlertId} openAlertId={openAlertId} onActionTaken={() => { void mutate(); }} />}
+      {data?.view === "agent"      && <AgentView      data={data} role={role} busy={busy} inject={inject} scenarioFeedback={scenarioFeedback} onPickAlert={setOpenAlertId} openAlertId={openAlertId} onActionTaken={() => { void mutate(); }} />}
       {data?.view === "ops"        && <OpsView        data={data} />}
       {data?.view === "risk"       && <RiskView       data={data} />}
       {data?.view === "provider"   && <ProviderView   data={data} />}
@@ -274,9 +380,10 @@ function OperationalLiquidityCard({ aggregate }: { aggregate?: OperationalLiquid
 // ============================================================================
 // AGENT VIEW — the screenshot-matching refined dashboard.
 // ============================================================================
-function AgentView({ data, role, busy, inject, onPickAlert, openAlertId, onActionTaken }: {
+function AgentView({ data, role, busy, inject, scenarioFeedback, onPickAlert, openAlertId, onActionTaken }: {
   data: DashboardSummary; role: string; busy: string | null;
-  inject: (k: string, p?: string) => void;
+  inject: (scenario: DemoScenario) => Promise<void>;
+  scenarioFeedback: ScenarioFeedback;
   onPickAlert: (id: number | null) => void;
   openAlertId: number | null;
   // Refresh callback fired when the user takes a recommended action from
@@ -289,7 +396,7 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId, onActio
     () => client.getAlert(openAlertId as number),
     { refreshInterval: 15000 }
   );
-  const { data: ownSupport } = useSWR(
+  const { data: ownSupport, mutate: refreshOwnSupport } = useSWR(
     ["cash-support", "agent", data.agent_id],
     () => client.getCashSupportRequests(),
     { refreshInterval: 5000 },
@@ -353,7 +460,12 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId, onActio
           prioritized recommended-action view.)
           onActionTaken refreshes SWR so the case state change and any
           resulting re-fusion show up immediately. */}
-      <DecisionRecommendationPanel data={data} onActionTaken={onActionTaken} />
+      <DecisionRecommendationPanel
+        data={data}
+        supportRequests={ownSupport?.requests ?? []}
+        onActionTaken={onActionTaken}
+        onSupportChanged={() => { void refreshOwnSupport(); }}
+      />
 
       {(ownSupport?.requests?.length ?? 0) > 0 && (
         <Card style={{ marginTop: 16, borderColor: "#fdba74" }}>
@@ -378,17 +490,63 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId, onActio
 
       {/* Scenario injectors — role-gated */}
       {can(role, "can_inject_scenario") && (
-        <Card style={{ marginTop: 18, marginBottom: 18 }}>
-          <div style={{ fontSize: 13, color: "#64748b", letterSpacing: 1, textTransform: "uppercase", marginBottom: 10, fontWeight: 600 }}>
-            Inject what-if scenario (for demo)
+        <Card style={{ marginTop: 18, marginBottom: 18, padding: 20, borderColor: "#cbd5e1" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 12, color: "#475569", letterSpacing: 1.1, textTransform: "uppercase", fontWeight: 800 }}>
+                Synthetic scenario lab
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 750, marginTop: 3 }}>Demonstrate a complete decision-support cycle</div>
+              <div style={{ fontSize: 13, color: "#64748b", marginTop: 5, maxWidth: 760, lineHeight: 1.5 }}>
+                Each control injects synthetic data, advances the simulation, recomputes forecasts and review signals,
+                and refreshes this dashboard. Results remain advisory and require human review.
+              </div>
+            </div>
+            <div style={{ padding: "5px 9px", borderRadius: 999, background: "#f1f5f9", color: "#475569", fontSize: 11, fontWeight: 700 }}>
+              SYNTHETIC ONLY · NO REAL TRANSACTIONS
+            </div>
           </div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 12, marginTop: 16 }}>
             {SCENARIOS.map(s => (
-              <button key={s.kind} onClick={() => inject(s.kind)} disabled={busy === s.kind} style={btn(s.color, "#fff")}>
-                {busy === s.kind ? "…" : s.label}
-              </button>
+              <div key={s.kind} style={{ display: "flex", flexDirection: "column", minHeight: 238, padding: 14, borderRadius: 10, border: `1px solid ${s.accent}33`, borderTop: `4px solid ${s.accent}`, background: s.tint }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: .8, color: s.accent, fontWeight: 800 }}>{s.category}</span>
+                  <span style={{ fontSize: 10, color: "#64748b", background: "#fff", borderRadius: 999, padding: "2px 7px", border: "1px solid #e2e8f0" }}>{s.provider.toUpperCase()}</span>
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 750, marginTop: 8, color: "#0f172a" }}>{s.title}</div>
+                <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.45, marginTop: 6 }}>{s.description}</div>
+                <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.45, marginTop: 9, paddingTop: 8, borderTop: "1px solid rgba(100,116,139,.18)" }}>
+                  <b style={{ color: "#334155" }}>Expected:</b> {s.expected}
+                </div>
+                <button
+                  onClick={() => { void inject(s); }}
+                  disabled={busy !== null}
+                  style={{
+                    marginTop: "auto", width: "100%", border: 0, borderRadius: 7,
+                    padding: "8px 10px", background: busy === null || busy === s.kind ? s.accent : "#cbd5e1",
+                    color: "#fff", fontSize: 12, fontWeight: 750,
+                    cursor: busy === null ? "pointer" : "not-allowed",
+                    opacity: busy !== null && busy !== s.kind ? .65 : 1,
+                  }}
+                >
+                  {busy === s.kind ? "Running analysis…" : "Run scenario"}
+                </button>
+              </div>
             ))}
           </div>
+
+          {scenarioFeedback && (
+            <div role="status" aria-live="polite" style={{
+              marginTop: 14, padding: "11px 13px", borderRadius: 8,
+              background: scenarioFeedback.tone === "success" ? "#ecfdf5" : "#fef2f2",
+              border: `1px solid ${scenarioFeedback.tone === "success" ? "#86efac" : "#fca5a5"}`,
+              color: scenarioFeedback.tone === "success" ? "#166534" : "#991b1b",
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 800 }}>{scenarioFeedback.title}</div>
+              <div style={{ fontSize: 12, marginTop: 2, lineHeight: 1.45 }}>{scenarioFeedback.detail}</div>
+            </div>
+          )}
         </Card>
       )}
 

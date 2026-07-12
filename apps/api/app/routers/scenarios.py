@@ -88,10 +88,25 @@ def inject(
     provider = payload.get("provider")
     intended = payload.get("intended_severity", "normal")
     is_anomaly = bool(payload.get("is_anomaly", False))
-    duration = int(payload.get("duration_minutes", 8))
+    try:
+        duration = int(payload.get("duration_minutes", 8))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "duration_minutes must be an integer")
 
     if kind not in ("bkash_surge", "repeated_amount", "structuring", "rocket_delay", "salary_day"):
         raise HTTPException(400, f"unknown scenario kind: {kind}")
+    if provider is not None and provider not in PROVIDERS:
+        raise HTTPException(400, "provider must be bkash, nagad, or rocket")
+    if kind == "bkash_surge" and provider not in (None, "bkash"):
+        raise HTTPException(400, "bkash_surge must target bkash")
+    if kind == "rocket_delay" and provider not in (None, "rocket"):
+        raise HTTPException(400, "rocket_delay must target rocket")
+    if not 1 <= duration <= 60:
+        raise HTTPException(400, "duration_minutes must be between 1 and 60")
+    if intended not in ("normal", "low", "high", "critical"):
+        raise HTTPException(400, "intended_severity must be normal, low, high, or critical")
+    if not isinstance(label, str) or not label.strip() or len(label) > 160:
+        raise HTTPException(400, "label must be a non-empty string of at most 160 characters")
 
     # Default labels per scenario for the ground-truth log
     default_intent = {
@@ -118,7 +133,14 @@ def inject(
         duration_minutes=duration, note=label,
     )
     ev = engine.inject_scenario(spec)
-    return {"scenario_event_id": ev.id, "kind": ev.kind, "intended_severity": ev.intended_severity}
+    return {
+        "scenario_event_id": ev.id,
+        "kind": ev.kind,
+        "provider": ev.provider,
+        "intended_severity": ev.intended_severity,
+        "duration_minutes": ev.duration_minutes,
+        "analysis_required": True,
+    }
 
 
 @router.post("/simulation/resolve-data-quality")

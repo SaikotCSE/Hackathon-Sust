@@ -27,3 +27,6 @@ apps/api/.data/
 
 # Problem statement binary (tracked as .md only)
 *.pdf
+
+# Hackathon test harness (local-only; not part of the project)
+hackathon_test/

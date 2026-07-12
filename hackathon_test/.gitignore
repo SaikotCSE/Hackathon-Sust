@@ -1,0 +1,17 @@
+# Test artifacts / secrets
+.env.test
+.env.test.local
+tests/reports/*.json
+tests/reports/*.md
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/

@@ -12,7 +12,7 @@ import { isProviderOperations } from "../../../lib/rbac";
 export default function AlertDetailPage() {
   const params = useParams<{ id: string }>();
   const id = Number(params.id);
-  const { data, mutate, error } = useSWR(["alert", id], () => client.getAlert(id), { refreshInterval: 15000 });
+  const { data, mutate, error } = useSWR(["alert", id], () => client.getAlert(id), { refreshInterval: 5000 });
   const { principal } = usePrincipal();
   const role = (principal?.role ?? "agent") as any;
   const canCoordinateOperations = isProviderOperations(role, principal?.username);

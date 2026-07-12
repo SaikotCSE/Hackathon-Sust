@@ -33,7 +33,7 @@ export function ProviderChartCard({
   const { data } = useSWR<DashboardSeriesResponse>(
     ["dashboard-series", agentId, p.provider],
     () => client.getDashboardSeries(agentId, p.provider),
-    { refreshInterval: 8000 }
+    { refreshInterval: 5000 }
   );
   const series = data?.series?.[0];
   const color = PROVIDER_DOT[p.provider] ?? "#64748b";

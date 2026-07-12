@@ -7,7 +7,7 @@ import { usePrincipal } from "../../components/PrincipalProvider";
 import { can } from "../../lib/rbac";
 
 export default function CasesPage() {
-  const { data } = useSWR("cases", () => client.getAlerts(), { refreshInterval: 15000 });
+  const { data } = useSWR("cases", () => client.getAlerts(), { refreshInterval: 5000 });
   const { principal } = usePrincipal();
   const role = (principal?.role ?? "") as any;
 

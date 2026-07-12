@@ -19,6 +19,12 @@ import type {
 } from "./types";
 
 export interface TickRequest { hours?: number; provider?: string }
+export interface DashboardFilters {
+  area?: string;
+  provider?: string;
+  agentId?: number;
+  sinceMinutes?: number;
+}
 export type ScenarioKind = "bkash_surge" | "repeated_amount" | "structuring" | "rocket_delay" | "salary_day";
 export interface InjectRequest {
   kind: ScenarioKind;
@@ -40,7 +46,7 @@ export type RecommendedActionKey =
   | "data_quality_followup";
 
 export interface DataClient {
-  getDashboard(agentId?: number): Promise<DashboardSummary>;
+  getDashboard(agentId?: number, filters?: DashboardFilters): Promise<DashboardSummary>;
   getAlerts(opts?: { status?: string; severity?: string }): Promise<AlertsList>;
   getAlert(id: number): Promise<AlertDetail>;
   transitionAlert(id: number, action: "ack" | "review" | "start" | "resolve" | "escalate" | "close", note?: string): Promise<AlertDetail>;
@@ -87,7 +93,14 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const apiClient: DataClient = {
-  getDashboard: (agentId = 1) => http(`/dashboard?agent_id=${agentId}`),
+  getDashboard: (agentId = 1, filters) => {
+    const q = new URLSearchParams({ agent_id: String(agentId) });
+    if (filters?.area) q.set("area", filters.area);
+    if (filters?.provider) q.set("provider", filters.provider);
+    if (filters?.agentId) q.set("mgr_agent", String(filters.agentId));
+    if (filters?.sinceMinutes) q.set("since_minutes", String(filters.sinceMinutes));
+    return http(`/dashboard?${q.toString()}`);
+  },
   getAlerts: (opts) => {
     const q = new URLSearchParams();
     if (opts?.status) q.set("status", opts.status);

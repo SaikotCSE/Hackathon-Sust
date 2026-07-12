@@ -10,7 +10,7 @@ import { DecisionRecommendationPanel } from "../../components/DecisionRecommenda
 import { AlertActionStrip } from "../../components/AlertActionStrip";
 import { usePrincipal } from "../../components/PrincipalProvider";
 import { can } from "../../lib/rbac";
-import type { DashboardSummary, CombinedView, DashboardProvider, CashSupportRequest } from "../../lib/types";
+import type { DashboardSummary, OperationalLiquiditySummary, DashboardProvider, CashSupportRequest } from "../../lib/types";
 
 // One-time inline keyframes for the "Loading X view…" pill at the bottom
 // of the dashboard. Kept here (not globals.css) so this file's behavior is
@@ -181,7 +181,7 @@ export default function DashboardPage() {
       )}
 
       {data?.view === "agent"      && <AgentView      data={data} role={role} busy={busy} inject={inject} onPickAlert={setOpenAlertId} openAlertId={openAlertId} onActionTaken={() => { void mutate(); }} />}
-      {data?.view === "ops"        && <OpsView        data={data} onSelectAgent={() => mutate()} />}
+      {data?.view === "ops"        && <OpsView        data={data} />}
       {data?.view === "risk"       && <RiskView       data={data} />}
       {data?.view === "provider"   && <ProviderView   data={data} />}
       {data?.view === "management" && <ManagementView data={data} />}
@@ -190,22 +190,20 @@ export default function DashboardPage() {
 }
 
 // ============================================================================
-// COMBINED PICTURE — one card showing cash + every e-money balance as a
-// single pool with a shared hours-to-shortage projection. Surfaces the
-// confidence + fallback state so the agent never sees a confident-looking
-// number that the system can't actually defend.
+// AGGREGATE PRESSURE — earliest independent constraint. Physical cash and
+// provider wallets remain visibly separate and are never added or converted.
 // ============================================================================
-function CombinedPictureCard({ combined }: { combined?: CombinedView }) {
-  if (!combined) return null;
-  const conf = Math.round((combined.confidence ?? 0) * 100);
-  const dq   = Math.round((combined.data_quality ?? 0) * 100);
-  const fallback = !!combined.fallback_active;
+function OperationalLiquidityCard({ aggregate }: { aggregate?: OperationalLiquiditySummary }) {
+  if (!aggregate) return null;
+  const conf = Math.round((aggregate.confidence ?? 0) * 100);
+  const dq   = Math.round((aggregate.data_quality ?? 0) * 100);
+  const fallback = !!aggregate.fallback_active;
 
   const headlineBg = fallback
     ? "#f1f5f9"
-    : combined.hours_to_shortage != null && combined.hours_to_shortage < 2
+    : aggregate.limiting_hours_to_shortage != null && aggregate.limiting_hours_to_shortage < 2
       ? "#fee2e2"
-      : combined.hours_to_shortage != null && combined.hours_to_shortage < 6
+      : aggregate.limiting_hours_to_shortage != null && aggregate.limiting_hours_to_shortage < 6
         ? "#fef9c3"
         : "#dcfce7";
 
@@ -214,28 +212,21 @@ function CombinedPictureCard({ combined }: { combined?: CombinedView }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 28, flexWrap: "wrap" }}>
         <div style={{ flex: "1 1 320px", minWidth: 280 }}>
           <div style={{ fontSize: 13, color: "#475569", letterSpacing: 1.2, textTransform: "uppercase", fontWeight: 600 }}>
-            Combined picture — cash on counter + every e-money balance
+            Aggregate pressure · independent positions
           </div>
-          <div style={{ fontSize: 36, fontWeight: 800, marginTop: 4, letterSpacing: -0.5 }}>
-            ৳ {(combined.total_cash ?? 0).toLocaleString()}
-          </div>
-          <div style={{ fontSize: 16, color: "#1e293b", marginTop: 6, fontWeight: 600 }}>
-            {combined.healthy_label ?? "projection unavailable right now"}
+          <div style={{ fontSize: 26, fontWeight: 800, marginTop: 5, letterSpacing: -0.3 }}>
+            {aggregate.pressure_label}
           </div>
           <div style={{ fontSize: 14, color: "#475569", marginTop: 4 }}>
-            You can keep serving customers for the next{" "}
-            <b>{combined.can_serve_hours_text ?? "—"}</b>.
+            Earliest reliable constraint: <b>{aggregate.limiting_position ?? "none projected"}</b>
+            {aggregate.limiting_position ? <> · {aggregate.shortage_eta_human}</> : null}
           </div>
         </div>
         <div style={{ textAlign: "right", fontSize: 14, color: "#334155", lineHeight: 1.7, minWidth: 220 }}>
           Physical cash on counter:&nbsp;
-            <b>৳ {(combined.physical_cash ?? 0).toLocaleString()}</b><br />
-          E-money balances (all providers):&nbsp;
-            <b>৳ {(combined.total_emoney ?? 0).toLocaleString()}</b><br />
-          Combined burn rate:&nbsp;
-            <b>৳ {(combined.combined_burn_per_min ?? 0).toFixed(2)} / min</b><br />
-          Shared hours to shortage:&nbsp;
-            <b>{combined.shortage_eta_human ?? "no projection"}</b>
+            <b>৳ {(aggregate.physical_cash ?? 0).toLocaleString()}</b><br />
+          Provider wallets:&nbsp;<b>{aggregate.provider_count} separate positions</b><br />
+          Separation:&nbsp;<b>not convertible or pooled</b>
         </div>
       </div>
 
@@ -259,8 +250,7 @@ function CombinedPictureCard({ combined }: { combined?: CombinedView }) {
           </span>
           <span>Data quality (worst provider):&nbsp;<b>{dq}%</b></span>
           <span>
-            Providers with burn-rate signal:&nbsp;
-            <b>{combined.providers_with_burn_signal ?? 0}</b> / {combined.providers_with_shortage_projection != null ? "—" : "—"}
+            Positions tracked:&nbsp;<b>{aggregate.provider_count + 1}</b>
           </span>
           {fallback && (
             <span style={{
@@ -271,9 +261,9 @@ function CombinedPictureCard({ combined }: { combined?: CombinedView }) {
             </span>
           )}
         </div>
-        {(combined.notes ?? []).length > 0 && (
+        {(aggregate.notes ?? []).length > 0 && (
           <ul style={{ margin: "8px 0 0 0", padding: "0 0 0 18px" }}>
-            {combined.notes.map((n, i) => <li key={i} style={{ marginBottom: 2 }}>{n}</li>)}
+            {aggregate.notes.map((n, i) => <li key={i} style={{ marginBottom: 2 }}>{n}</li>)}
           </ul>
         )}
       </div>
@@ -313,6 +303,18 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId, onActio
 
   return (
     <>
+      {(data.operational_contexts ?? []).map((context, i) => (
+        <Card key={`${context.provider}-${context.kind}-${i}`} style={{ marginBottom: 12, background: "#eff6ff", borderColor: "#93c5fd" }}>
+          <div style={{ fontSize: 11, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: 1 }}>
+            Observed operational context · {context.provider}
+          </div>
+          <div style={{ fontWeight: 700, marginTop: 3 }}>{context.note}</div>
+          <div style={{ fontSize: 12, color: "#475569", marginTop: 3 }}>
+            Source: {context.source} · expires {new Date(context.ends_at).toLocaleString()} · contextual evidence, not an evaluation label
+          </div>
+        </Card>
+      ))}
+      <OperationalLiquidityCard aggregate={data.aggregate} />
       <Card style={{ marginBottom: 18, background: scoreBg, border: 0, padding: 22 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 28 }}>
           <div>
@@ -424,7 +426,7 @@ function AgentView({ data, role, busy, inject, onPickAlert, openAlertId, onActio
 // ============================================================================
 // OPS VIEW — list agents in my area with per-agent pressure and dispatch hint.
 // ============================================================================
-function OpsView({ data, onSelectAgent }: { data: DashboardSummary; onSelectAgent: () => void }) {
+function OpsView({ data }: { data: DashboardSummary }) {
   const list = data.per_agent ?? [];
   return (
     <>
@@ -616,7 +618,7 @@ function ProviderView({ data }: { data: DashboardSummary }) {
       </Card>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         {list.map(a => {
-          // Combined pool block is cross-provider by definition — drop it.
+          // Aggregate block spans independent positions — provider view drops it.
           // Aligned with server-side enforcement.
           const myCol = onlyOwn(a.providers)[0] ?? null;
           const myAlerts = (a.alerts ?? []).filter(al => al?.provider === prov);
@@ -817,7 +819,7 @@ function RecurringProblemsList({
   items, anomalyRollup,
 }: {
   items: { agent_id: number; agent_code: string; display_name: string; provider: string;
-           open_window: number; open_7d: number; is_recurring_pattern: boolean; sample_alert_id: number }[];
+           open_window: number; open_24h: number; is_recurring_pattern: boolean }[];
   anomalyRollup: { area: string; provider: string; anomaly_count: number }[];
 }) {
   const top = [...items].sort((a, b) => b.open_window - a.open_window).slice(0, 8);
@@ -836,7 +838,7 @@ function RecurringProblemsList({
             <th style={mgmtTh}>Agent</th>
             <th style={mgmtTh}>Provider</th>
             <th style={{ ...mgmtTh, textAlign: "right" }}>Open (window)</th>
-            <th style={{ ...mgmtTh, textAlign: "right" }}>Open (7d)</th>
+            <th style={{ ...mgmtTh, textAlign: "right" }}>Open (24h)</th>
             <th style={mgmtTh}>Pattern</th>
           </tr>
         </thead>
@@ -850,7 +852,7 @@ function RecurringProblemsList({
               <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: r.open_window > 0 ? "#dc2626" : "#16a34a" }}>
                 {r.open_window}
               </td>
-              <td style={{ padding: "6px 8px", textAlign: "right", color: "#475569" }}>{r.open_7d}</td>
+              <td style={{ padding: "6px 8px", textAlign: "right", color: "#475569" }}>{r.open_24h}</td>
               <td style={{ padding: "6px 8px" }}>
                 {r.is_recurring_pattern ? (
                   <span style={{
@@ -891,43 +893,35 @@ function RecurringProblemsList({
 const mgmtTh: React.CSSProperties = { padding: "6px 8px", fontWeight: 500, fontSize: 11 };
 
 function ManagementView({ data }: { data: DashboardSummary }) {
-  const list = (data as any).areas ?? [];
-  const network = (data as any).network ?? {};
-  const scope = (data as any).scope ?? {};
-  const recurring = (data as any).recurring_problems ?? {};
+  const [filters, setFilters] = useState({ provider: "", area: "", mgr_agent: "", since_minutes: "1440" });
+  const { data: filteredData, isLoading: filtersLoading } = useSWR(
+    ["management-dashboard", filters.provider, filters.area, filters.mgr_agent, filters.since_minutes],
+    () => client.getDashboard(1, {
+      provider: filters.provider || undefined,
+      area: filters.area || undefined,
+      agentId: filters.mgr_agent ? Number(filters.mgr_agent) : undefined,
+      sinceMinutes: Number(filters.since_minutes),
+    }),
+    { keepPreviousData: true, dedupingInterval: 500 },
+  );
+  const viewData = filteredData?.view === "management" ? filteredData : data;
+  const list = (viewData as any).areas ?? [];
+  const network = (viewData as any).network ?? {};
+  const scope = (viewData as any).scope ?? {};
+  const recurring = (viewData as any).recurring_problems ?? {};
   const providerCount: number = scope.provider_count ?? 0;
   const incompleteCount: number = scope.incomplete_provider_count ?? 0;
   const completeness: number = scope.data_completeness ?? 1.0;
   const windowMinutes: number = recurring.window_minutes ?? 1440;
 
-  // Areas listed in the unfiltered view (don't depend on filters for the dropdown population)
-  const allAreas: string[] = Array.from(new Set(list.map((b: any) => b.area))).sort() as string[];
+  // Keep filter options from the original unfiltered response.
+  const baseList = (data as any).areas ?? [];
+  const allAreas: string[] = Array.from(new Set(baseList.map((b: any) => b.area))).sort() as string[];
   const agentMap = new Map<number, { id: number; code: string; display_name: string }>();
-  list.forEach((b: any) => (b.agents_detail || []).forEach((a: any) => {
+  baseList.forEach((b: any) => (b.agents_detail || []).forEach((a: any) => {
     agentMap.set(a.agent_id, { id: a.agent_id, code: a.agent_code, display_name: a.display_name });
   }));
   const allAgents = Array.from(agentMap.values()).sort((a, b) => a.display_name.localeCompare(b.display_name));
-
-  const [filters, setFilters] = useState({ provider: "", area: "", mgr_agent: "", since_minutes: "1440" });
-
-  // Apply filters client-side from the already-fetched areas (the API returns the same fields on every response; the query params only control which subset is included).
-  const filteredList = list.filter((b: any) => {
-    if (filters.area && b.area !== filters.area) return false;
-    if (filters.provider) {
-      const has = (b.providers_active || []).includes(filters.provider)
-        || (b.pressure_buckets && (b.pressure_buckets[filters.provider + "_tier"] || b.pressure_buckets[filters.provider]));
-      // Provider filter mainly acts as a label for context; areas are still shown if they show up under any provider.
-      if (!has) {
-        // still show area if *any* agent in it exists and the rollup kept them
-      }
-    }
-    if (filters.mgr_agent) {
-      const id = Number(filters.mgr_agent);
-      const present = (b.agents_detail || []).some((a: any) => a.agent_id === id);
-      if (!present) return false;
-    }
-    return true;
-  });
 
   const incompleteAreas = list.filter((b: any) => b.agents_with_incomplete_data).length;
 
@@ -949,6 +943,7 @@ function ManagementView({ data }: { data: DashboardSummary }) {
             areas={allAreas}
             agents={allAgents}
           />
+          {filtersLoading && <div style={{ fontSize: 11, color: "#64748b", marginTop: 6 }}>Applying server-side filters…</div>}
         </div>
       </Card>
 
@@ -982,7 +977,7 @@ function ManagementView({ data }: { data: DashboardSummary }) {
               Recurring problems · last {windowMinutes < 1440 ? `${Math.round(windowMinutes / 60)}h` : windowMinutes === 1440 ? "24h" : `${Math.round(windowMinutes / 1440)}d`}
             </div>
             <div style={{ fontSize: 13, color: "#475569", marginTop: 2 }}>
-              Counts compare the open window against a 7-day baseline. "Recurring pattern" means the agent has review signals in both windows.
+              Counts show the selected window beside the last 24 hours. "Recurring pattern" means at least two open review signals in the selected window.
             </div>
           </div>
           <div style={{ fontSize: 12, color: "#475569" }}>
@@ -998,7 +993,7 @@ function ManagementView({ data }: { data: DashboardSummary }) {
       </Card>
 
       <div style={{ display: "grid", gap: 12 }}>
-        {(filteredList.length === 0 ? list : filteredList).map((b: any, i: number) => (
+        {list.map((b: any, i: number) => (
           <Card key={`${b.area}-${i}`}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
@@ -1069,9 +1064,9 @@ function ManagementView({ data }: { data: DashboardSummary }) {
             )}
           </Card>
         ))}
-        {filteredList.length === 0 && (
+        {list.length === 0 && (
           <div style={{ fontSize: 12, color: "#94a3b8", padding: 12 }}>
-            No areas match the current filters. Showing all areas instead.
+            No areas match the current server-side filters.
           </div>
         )}
       </div>

@@ -7,7 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.models.database import Agent, BalanceHistory, ProviderBalance
 from app.services.liquidity import compute_forecast, rate_projection
-from app.services.snapshots import agent_snapshot
+from app.services.snapshots import agent_snapshot, operational_liquidity_summary
 from app.simulation.engine import ScenarioSpec, SimulationEngine, data_quality_for, resolve_open_data_quality
 
 
@@ -78,6 +78,22 @@ class LiquidityForecastTests(unittest.TestCase):
         self.assertIn("draining fast", fast.summary)
         self.assertIn("500 BDT/min", " ".join(fast.reasons))
         self.assertNotEqual(stable.summary, fast.summary)
+
+    def test_aggregate_pressure_uses_earliest_independent_constraint(self):
+        summary = operational_liquidity_summary([
+            {"provider": "physical", "balance": 50_000, "hours_to_shortage": 4.0,
+             "forecast_confidence": .9, "data_quality": 1.0, "degraded": False},
+            {"provider": "bkash", "balance": 2_000, "hours_to_shortage": .75,
+             "forecast_confidence": .8, "data_quality": 1.0, "degraded": False},
+            {"provider": "nagad", "balance": 80_000, "hours_to_shortage": None,
+             "forecast_confidence": .85, "data_quality": 1.0, "degraded": False},
+            {"provider": "rocket", "balance": 40_000, "hours_to_shortage": 3.0,
+             "forecast_confidence": .7, "data_quality": 1.0, "degraded": False},
+        ])
+        self.assertEqual(summary["limiting_position"], "bkash")
+        self.assertEqual(summary["limiting_hours_to_shortage"], .75)
+        self.assertTrue(summary["non_convertible"])
+        self.assertNotIn("total_cash", summary)
 
     def test_sparse_stale_and_conflicting_data_withhold_eta(self):
         self.add_series("bkash", [1000, 900, 800])
@@ -173,7 +189,9 @@ class LiquidityForecastTests(unittest.TestCase):
         self.assertIsNone(degraded_forecast.hours_to_shortage)
         self.assertLess(degraded_forecast.confidence, clean_before["forecast_confidence"])
         self.assertTrue(rocket_degraded["degraded"])
-        self.assertTrue(degraded_snapshot["combined"]["fallback_active"])
+        self.assertTrue(degraded_snapshot["aggregate"]["fallback_active"])
+        self.assertTrue(degraded_snapshot["aggregate"]["non_convertible"])
+        self.assertNotIn("total_cash", degraded_snapshot["aggregate"])
 
         self.assertEqual(resolve_open_data_quality(self.session, "rocket"), 1)
         restored_quality = data_quality_for(self.session, "rocket")

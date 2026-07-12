@@ -56,20 +56,17 @@ export interface DashboardAlert {
   created_at: string;
 }
 
-export interface CombinedView {
-  total_cash: number;
+export interface OperationalLiquiditySummary {
   physical_cash: number;
-  total_emoney: number;
-  combined_burn_per_min: number;
-  hours_to_shortage: number | null;
+  provider_count: number;
+  limiting_position: string | null;
+  limiting_hours_to_shortage: number | null;
   shortage_eta_human: string;
-  confidence: number;          // 0..1
-  data_quality: number;        // 0..1 (worst-of the providers)
-  healthy_label: string;       // headline narrative ("comfortable for the next few hours")
-  can_serve_hours_text: string; // "5.4 hours" / "—" / "~30 min"
-  providers_with_burn_signal: number;
-  providers_with_shortage_projection: number;
+  confidence: number;
+  data_quality: number;
+  pressure_label: string;
   fallback_active: boolean;
+  non_convertible: true;
   notes: string[];
 }
 
@@ -84,10 +81,14 @@ export interface DashboardSummary {
   overall_reason?: string;
   providers?: DashboardProvider[];
   alerts?: DashboardAlert[];
-  // combined / aggregate picture (added so the dashboard can answer
-  // "can I keep serving customers for the next few hours?" without
-  // adding the figures up in the UI)
-  combined?: CombinedView;
+  aggregate?: OperationalLiquiditySummary;
+  operational_contexts?: Array<{
+    kind: string;
+    provider: string;
+    note: string;
+    source: string;
+    ends_at: string;
+  }>;
   // ops / provider views
   per_agent?: Array<{
     agent_id: number;
@@ -98,6 +99,7 @@ export interface DashboardSummary {
     overall_score: number;
     overall_reason: string;
     providers: DashboardProvider[];
+    aggregate?: OperationalLiquiditySummary;
     alerts: DashboardAlert[];
   }>;
   // risk view
@@ -195,15 +197,15 @@ export interface AlertsList {
 }
 
 export interface MetricsSnapshot {
-  liquidity_mae_minutes: number;
-  shortage_lead_time_minutes: number;
-  anomaly_precision: number;
-  anomaly_recall: number;
-  false_positive_rate: number;
-  explanation_coverage: number;
-  api_latency_p50_ms: number;
-  api_latency_p95_ms: number;
-  confidence_delta_under_bad_data: number;
+  liquidity_mae_minutes: number | null;
+  shortage_lead_time_minutes: number | null;
+  anomaly_precision: number | null;
+  anomaly_recall: number | null;
+  false_positive_rate: number | null;
+  explanation_coverage: number | null;
+  api_latency_p50_ms: number | null;
+  api_latency_p95_ms: number | null;
+  confidence_delta_under_bad_data: number | null;
   priority_classification_alignment: number | null;
   alert_count: number;
   anomaly_event_count: number;

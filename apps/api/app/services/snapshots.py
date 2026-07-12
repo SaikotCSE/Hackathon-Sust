@@ -96,6 +96,68 @@ def _provider_health(balance: float, hours_to_shortage: Optional[float], data_qu
     return "low"
 
 
+def operational_liquidity_summary(providers_out: List[dict]) -> dict:
+    """Summarize the earliest independent constraint without pooling balances.
+
+    Physical cash and each provider wallet remain separate positions. The
+    aggregate pressure indicator is the earliest reliable depletion estimate
+    among them, never a projection based on adding or converting balances.
+    """
+    physical = next((p for p in providers_out if p.get("provider") == "physical"), None)
+    provider_rows = [p for p in providers_out if p.get("provider") != "physical"]
+    incomplete = [p for p in providers_out if p.get("degraded")]
+    candidates = [p for p in providers_out if p.get("hours_to_shortage") is not None]
+    limiting = min(candidates, key=lambda p: float(p["hours_to_shortage"])) if candidates else None
+    worst_dq = min((float(p.get("data_quality") or 0.0) for p in providers_out), default=0.0)
+
+    if limiting is not None:
+        hours = float(limiting["hours_to_shortage"])
+        limiting_position = str(limiting.get("provider") or "unknown")
+        confidence = float(limiting.get("forecast_confidence") or 0.0)
+        if hours < 0.5:
+            pressure_label = f"Critical: {limiting_position} is the earliest independent constraint"
+        elif hours < 2:
+            pressure_label = f"High pressure: {limiting_position} is the earliest independent constraint"
+        elif hours < 6:
+            pressure_label = f"Watch {limiting_position}: it is the earliest independent constraint"
+        else:
+            pressure_label = f"Earliest projected constraint is {limiting_position}"
+    else:
+        hours = None
+        limiting_position = None
+        confidence = min(
+            (float(p.get("forecast_confidence") or 0.0) for p in providers_out),
+            default=0.0,
+        )
+        pressure_label = (
+            "Partial visibility: refresh incomplete positions before concluding liquidity is healthy"
+            if incomplete
+            else "No independent position is currently projected to deplete"
+        )
+
+    notes = [
+        "Physical cash and provider e-money are independent, non-convertible positions.",
+        "The aggregate pressure indicator uses the earliest position-level constraint; balances are never pooled.",
+    ]
+    if incomplete:
+        names = ", ".join(str(p.get("provider")) for p in incomplete)
+        notes.append(f"Partial visibility for: {names}; any displayed constraint is advisory.")
+
+    return {
+        "physical_cash": round(float((physical or {}).get("balance") or 0.0), 2),
+        "provider_count": len(provider_rows),
+        "limiting_position": limiting_position,
+        "limiting_hours_to_shortage": hours,
+        "shortage_eta_human": _shortage_eta_human(hours),
+        "confidence": round(confidence, 3),
+        "data_quality": round(worst_dq, 3),
+        "pressure_label": pressure_label,
+        "fallback_active": bool(incomplete) or (limiting is None and confidence < 0.5),
+        "non_convertible": True,
+        "notes": notes,
+    }
+
+
 def overall_score(
     balances: Dict[str, float],
     forecasts: Dict[str, Optional[ForecastSnapshot]],
@@ -268,115 +330,8 @@ def agent_snapshot(session: Session, agent_id: int) -> dict:
     }
     overall, overall_reason = overall_score(balances, forecasts, dq_by_provider)
 
-    # ---- Combined / aggregate picture ------------------------------------
-    # Single shop's full liquidity = physical cash on the counter + every
-    # provider's e-money balance. We compute one shared burn rate (weighted
-    # by data quality so a stale provider can't dominate) and project how
-    # long this combined pool can keep serving customers. If confidence is
-    # too low we surface a fallback instead of pretending we have a number.
     physical = float(balances.get("physical", 0.0))
-    total_emoney = 0.0
-    weighted_burn_num = 0.0
-    weighted_burn_den = 0.0
-    weighted_conf_num = 0.0
-    weighted_conf_den = 0.0
-    worst_dq = 1.0
-    n_with_burn = 0
-    n_with_h2s = 0
-    any_degraded = False
-    for prov_block in providers_out:
-        dq = float(prov_block.get("data_quality") or 0.0)
-        burn = float(prov_block.get("burn_rate_per_min") or 0.0)
-        conf = float(prov_block.get("forecast_confidence") or 0.0)
-        bal = float(prov_block.get("balance") or 0.0)
-        any_degraded = any_degraded or bool(prov_block.get("degraded"))
-        if prov_block.get("provider") != "physical":
-            total_emoney += bal
-        # weight by data quality so stale columns don't dominate the shared burn rate
-        if burn > 0:
-            weighted_burn_num += burn
-            weighted_burn_den = 1.0
-            n_with_burn += 1
-        if prov_block.get("hours_to_shortage") is not None:
-            n_with_h2s += 1
-        # confidence — use data_quality as well since it's the 'is the feed
-        # healthy' signal; multiplier keeps both axes in [0,1]
-        weighted_conf_num += max(min(conf, 1.0), 0.0) * max(min(dq, 1.0), 0.0)
-        weighted_conf_den += 1.0
-        worst_dq = min(worst_dq, dq)
-
-    combined_burn_per_min = (
-        weighted_burn_num / weighted_burn_den if weighted_burn_den > 0 else 0.0
-    )
-    combined_confidence = (
-        weighted_conf_num / weighted_conf_den if weighted_conf_den > 0 else 0.0
-    )
-    total_cash = physical + total_emoney
-
-    # shared-cash hours_to_shortage: how long until the SHARED pool (cash on
-    # counter + every e-money balance) is empty at the current combined burn.
-    # Confidence floor: if we have no burn signal yet OR confidence is too
-    # low, we return None so the UI shows a fallback message instead of a
-    # misleading number.
-    combined_hours_to_shortage: Optional[float]
-    notes: List[str] = []
-    if total_cash <= 0:
-        combined_hours_to_shortage = 0.0
-        notes.append("Combined pool is empty — refill or wait for incoming transactions.")
-    elif combined_burn_per_min <= 0 or n_with_burn == 0:
-        combined_hours_to_shortage = None
-        notes.append("Not enough burn-rate samples yet — need a few minutes of activity to project the shared pool.")
-    elif combined_confidence < 0.25:
-        combined_hours_to_shortage = None
-        notes.append("Combined projection paused — confidence is low because some provider feeds are late or stale.")
-    elif worst_dq < 0.4 or any_degraded:
-        combined_hours_to_shortage = None
-        notes.append("Combined projection paused — at least one provider needs fresh or higher-quality data.")
-    else:
-        combined_hours_to_shortage = round(total_cash / (combined_burn_per_min * 60.0), 2)
-
-    # narrative label the dashboard renders as the headline ("can I keep
-    # serving customers for the next few hours?")
-    if combined_hours_to_shortage is None:
-        healthy_label = "projection unavailable right now"
-        can_serve_hours_text = "—"
-    elif combined_hours_to_shortage < 0.5:
-        healthy_label = "combined pool will run out in under 30 minutes"
-        can_serve_hours_text = f"{int(round(combined_hours_to_shortage * 60))} min"
-    elif combined_hours_to_shortage < 2:
-        healthy_label = "combined pool will run out in under 2 hours"
-        can_serve_hours_text = f"{combined_hours_to_shortage:.1f} hours"
-    elif combined_hours_to_shortage < 6:
-        healthy_label = "comfortable for the next few hours"
-        can_serve_hours_text = f"{combined_hours_to_shortage:.1f} hours"
-    else:
-        healthy_label = "comfortable — well over half a day of activity"
-        can_serve_hours_text = f"{combined_hours_to_shortage:.1f} hours"
-
-    if combined_confidence > 0:
-        if combined_confidence >= 0.6:
-            notes.append(f"Confidence is high ({int(round(combined_confidence * 100))}%) — projection is reliable.")
-        elif combined_confidence >= 0.3:
-            notes.append(f"Confidence is moderate ({int(round(combined_confidence * 100))}%) — treat the projection as advisory.")
-        else:
-            notes.append(f"Confidence is low ({int(round(combined_confidence * 100))}%) — wait for more data before acting on the number.")
-
-    combined_block = {
-        "total_cash": round(total_cash, 2),
-        "physical_cash": round(physical, 2),
-        "total_emoney": round(total_emoney, 2),
-        "combined_burn_per_min": round(combined_burn_per_min, 4),
-        "hours_to_shortage": combined_hours_to_shortage,
-        "shortage_eta_human": _shortage_eta_human(combined_hours_to_shortage),
-        "confidence": round(combined_confidence, 3),
-        "data_quality": round(worst_dq, 3),  # worst-of so a bad feed trips the fallback
-        "healthy_label": healthy_label,
-        "can_serve_hours_text": can_serve_hours_text,
-        "providers_with_burn_signal": n_with_burn,
-        "providers_with_shortage_projection": n_with_h2s,
-        "fallback_active": combined_hours_to_shortage is None,
-        "notes": notes,
-    }
+    aggregate_block = operational_liquidity_summary(providers_out)
 
     return {
         "agent_id": agent.id,
@@ -387,7 +342,7 @@ def agent_snapshot(session: Session, agent_id: int) -> dict:
         "overall_score": overall,
         "overall_reason": overall_reason,
         "providers": providers_out,
-        "combined": combined_block,
+        "aggregate": aggregate_block,
         "alerts": [
             {
                 "id": a.id,
@@ -601,100 +556,8 @@ def batch_agent_snapshots(session: Session, agent_ids: List[int]) -> List[dict]:
             forecast_objs[prov] = shim
         overall, overall_reason = overall_score(balances, forecast_objs, dq_by_provider)
 
-        # ---- Combined pool block (same formula as agent_snapshot) ---------
         physical = float(balances.get("physical", 0.0))
-        total_emoney = 0.0
-        weighted_burn_num = 0.0
-        weighted_burn_den = 0.0
-        weighted_conf_num = 0.0
-        weighted_conf_den = 0.0
-        worst_dq = 1.0
-        n_with_burn = 0
-        n_with_h2s = 0
-        any_degraded = False
-        for prov_block in providers_out:
-            dq = float(prov_block.get("data_quality") or 0.0)
-            burn = float(prov_block.get("burn_rate_per_min") or 0.0)
-            conf = float(prov_block.get("forecast_confidence") or 0.0)
-            bal = float(prov_block.get("balance") or 0.0)
-            any_degraded = any_degraded or bool(prov_block.get("degraded"))
-            if prov_block.get("provider") != "physical":
-                total_emoney += bal
-            if burn > 0:
-                weighted_burn_num += burn
-                weighted_burn_den = 1.0
-                n_with_burn += 1
-            if prov_block.get("hours_to_shortage") is not None:
-                n_with_h2s += 1
-            weighted_conf_num += max(min(conf, 1.0), 0.0) * max(min(dq, 1.0), 0.0)
-            weighted_conf_den += 1.0
-            worst_dq = min(worst_dq, dq)
-
-        combined_burn_per_min = (
-            weighted_burn_num / weighted_burn_den if weighted_burn_den > 0 else 0.0
-        )
-        combined_confidence = (
-            weighted_conf_num / weighted_conf_den if weighted_conf_den > 0 else 0.0
-        )
-        total_cash = physical + total_emoney
-
-        combined_hours_to_shortage: Optional[float]
-        notes: List[str] = []
-        if total_cash <= 0:
-            combined_hours_to_shortage = 0.0
-            notes.append("Combined pool is empty — refill or wait for incoming transactions.")
-        elif combined_burn_per_min <= 0 or n_with_burn == 0:
-            combined_hours_to_shortage = None
-            notes.append("Not enough burn-rate samples yet — need a few minutes of activity to project the shared pool.")
-        elif combined_confidence < 0.25:
-            combined_hours_to_shortage = None
-            notes.append("Combined projection paused — confidence is low because some provider feeds are late or stale.")
-        elif worst_dq < 0.4 or any_degraded:
-            combined_hours_to_shortage = None
-            notes.append("Combined projection paused — at least one provider needs fresh or higher-quality data.")
-        else:
-            combined_hours_to_shortage = round(total_cash / (combined_burn_per_min * 60.0), 2)
-
-        if combined_hours_to_shortage is None:
-            healthy_label = "projection unavailable right now"
-            can_serve_hours_text = "—"
-        elif combined_hours_to_shortage < 0.5:
-            healthy_label = "combined pool will run out in under 30 minutes"
-            can_serve_hours_text = f"{int(round(combined_hours_to_shortage * 60))} min"
-        elif combined_hours_to_shortage < 2:
-            healthy_label = "combined pool will run out in under 2 hours"
-            can_serve_hours_text = f"{combined_hours_to_shortage:.1f} hours"
-        elif combined_hours_to_shortage < 6:
-            healthy_label = "comfortable for the next few hours"
-            can_serve_hours_text = f"{combined_hours_to_shortage:.1f} hours"
-        else:
-            healthy_label = "comfortable — well over half a day of activity"
-            can_serve_hours_text = f"{combined_hours_to_shortage:.1f} hours"
-
-        if combined_confidence > 0:
-            if combined_confidence >= 0.6:
-                notes.append(f"Confidence is high ({int(round(combined_confidence * 100))}%) — projection is reliable.")
-            elif combined_confidence >= 0.3:
-                notes.append(f"Confidence is moderate ({int(round(combined_confidence * 100))}%) — treat the projection as advisory.")
-            else:
-                notes.append(f"Confidence is low ({int(round(combined_confidence * 100))}%) — wait for more data before acting on the number.")
-
-        combined_block = {
-            "total_cash": round(total_cash, 2),
-            "physical_cash": round(physical, 2),
-            "total_emoney": round(total_emoney, 2),
-            "combined_burn_per_min": round(combined_burn_per_min, 4),
-            "hours_to_shortage": combined_hours_to_shortage,
-            "shortage_eta_human": _shortage_eta_human(combined_hours_to_shortage),
-            "confidence": round(combined_confidence, 3),
-            "data_quality": round(worst_dq, 3),
-            "healthy_label": healthy_label,
-            "can_serve_hours_text": can_serve_hours_text,
-            "providers_with_burn_signal": n_with_burn,
-            "providers_with_shortage_projection": n_with_h2s,
-            "fallback_active": combined_hours_to_shortage is None,
-            "notes": notes,
-        }
+        aggregate_block = operational_liquidity_summary(providers_out)
 
         out.append({
             "agent_id": agent.id,
@@ -705,7 +568,7 @@ def batch_agent_snapshots(session: Session, agent_ids: List[int]) -> List[dict]:
             "overall_score": overall,
             "overall_reason": overall_reason,
             "providers": providers_out,
-            "combined": combined_block,
+            "aggregate": aggregate_block,
             "alerts": [
                 {
                     "id": a.id,

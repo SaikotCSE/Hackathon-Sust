@@ -129,7 +129,15 @@ export default function DashboardPage() {
   // render so deep-links work after a hard refresh.
   const [urlAgentId, setUrlAgentId] = useState<number>(() => readAgentIdFromUrl());
   useEffect(() => {
-    const sync = () => setUrlAgentId(readAgentIdFromUrl());
+    // Reading URL state during another component's useInsertionEffect is
+    // disallowed in React 19, and our pushState/replaceState patches can
+    // fire inside that phase when Next.js wires up its router. Always
+    // schedule the setState on a microtask so we exit the insertion
+    // phase before React tries to commit an update.
+    const schedule = (fn: () => void) => {
+      queueMicrotask(fn);
+    };
+    const sync = () => schedule(() => setUrlAgentId(readAgentIdFromUrl()));
     sync();
     window.addEventListener("popstate", sync);
     // The ops list uses <a href="?agent_id=..."> which triggers a same-tab

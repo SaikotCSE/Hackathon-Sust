@@ -163,7 +163,7 @@ export default function DashboardPage() {
     cacheKey,
     () => client.getDashboard(urlAgentId).then(d => d as unknown as DashboardSummary),
     {
-      refreshInterval: 5000,
+      refreshInterval: 3000,
       // Keep the previous role's summary on screen while the new one loads —
       // otherwise the page goes blank for ~1 round trip on every role switch,
       // which is what made the dashboard feel "way too slow" when toggling.
@@ -394,12 +394,12 @@ function AgentView({ data, role, busy, inject, scenarioFeedback, onPickAlert, op
   const { data: open } = useSWR(
     openAlertId ? ["alert", openAlertId] : null,
     () => client.getAlert(openAlertId as number),
-    { refreshInterval: 5000 }
+    { refreshInterval: 3000 }
   );
   const { data: ownSupport, mutate: refreshOwnSupport } = useSWR(
     ["cash-support", "agent", data.agent_id],
     () => client.getCashSupportRequests(),
-    { refreshInterval: 5000 },
+    { refreshInterval: 3000 },
   );
 
   const providers = (data.providers ?? []).filter(p => p.provider !== "physical");
@@ -704,7 +704,7 @@ function ProviderView({ data }: { data: DashboardSummary }) {
   const { data: supportData, mutate: refreshSupport } = useSWR(
     ["cash-support", prov],
     () => client.getCashSupportRequests(),
-    { refreshInterval: 5000 },
+    { refreshInterval: 3000 },
   );
   const [supportBusy, setSupportBusy] = useState<number | null>(null);
   const [supportError, setSupportError] = useState<string | null>(null);

@@ -18,7 +18,7 @@ export default function AlertsPage() {
       status: status === "all" ? undefined : status,
       severity: severity === "all" ? undefined : severity,
     }),
-    { refreshInterval: 5000 }
+    { refreshInterval: 3000 }
   );
   return (
     <>

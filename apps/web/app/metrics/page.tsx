@@ -7,10 +7,10 @@ import { usePrincipal } from "../../components/PrincipalProvider";
 import { can } from "../../lib/rbac";
 
 export default function MetricsPage() {
-  const { data, mutate: mutateMetrics } = useSWR("metrics", () => client.getMetrics(), { refreshInterval: 5000 });
+  const { data, mutate: mutateMetrics } = useSWR("metrics", () => client.getMetrics(), { refreshInterval: 3000 });
   const { data: weights, mutate: mutateWeights } = useSWR("weights", () => client.getDecisionWeights());
-  const { data: scenarios } = useSWR("scenarios", () => client.getScenarios(), { refreshInterval: 5000 });
-  const { data: dq } = useSWR("dq", () => client.getDataQualityEvents(), { refreshInterval: 5000 });
+  const { data: scenarios } = useSWR("scenarios", () => client.getScenarios(), { refreshInterval: 3000 });
+  const { data: dq } = useSWR("dq", () => client.getDataQualityEvents(), { refreshInterval: 3000 });
   const [busy, setBusy] = useState(false);
   const { principal } = usePrincipal();
   const role = (principal?.role ?? "") as any;

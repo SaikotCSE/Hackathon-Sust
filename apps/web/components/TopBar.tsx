@@ -36,7 +36,7 @@ export function TopBar({
   const { data: inbox, mutate: refreshInbox } = useSWR(
     principal ? ["notifications", principal.username] : null,
     () => client.getNotifications(),
-    { refreshInterval: 5000 },
+    { refreshInterval: 3000 },
   );
   const [showInbox, setShowInbox] = useState(false);
   const role = principal?.role ?? "agent";

@@ -320,7 +320,11 @@ def agent_snapshot(session: Session, agent_id: int) -> dict:
         })
 
     open_alerts = session.exec(
-        select(Alert).where(Alert.agent_id == agent_id).order_by(Alert.created_at.desc()).limit(10)
+        select(Alert)
+        .where(Alert.agent_id == agent_id)
+        .where(Alert.status.notin_(["resolved", "closed"]))
+        .order_by(Alert.created_at.desc())
+        .limit(10)
     ).all()
 
     dq_by_provider: Dict[str, float] = {
@@ -471,6 +475,7 @@ def batch_agent_snapshots(session: Session, agent_ids: List[int]) -> List[dict]:
     alerts_rows = session.exec(
         select(Alert)
         .where(Alert.agent_id.in_(agent_ids))
+        .where(Alert.status.notin_(["resolved", "closed"]))
         .order_by(Alert.created_at.desc())
         .limit(len(agent_ids) * _ALERTS_PER_AGENT)
     ).all()

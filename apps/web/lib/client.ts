@@ -5,6 +5,7 @@
 import type {
   AlertsList,
   AlertDetail,
+  RecommendedActionResult,
   DashboardSeriesResponse,
   DashboardSummary,
   DecisionWeights,
@@ -54,7 +55,7 @@ export interface DataClient {
   regenerateExplanation(id: number, language?: "en" | "bn" | "banglish"): Promise<NonNullable<AlertDetail["case"]>>;
   coordinateCase(id: number, action: string, comment: string, target?: string): Promise<NonNullable<AlertDetail["case"]>>;
   recordRiskRecommendation(id: number, recommendation: string, comment: string): Promise<NonNullable<AlertDetail["case"]>>;
-  executeRecommendedAction(id: number, actionKey: RecommendedActionKey, note?: string): Promise<AlertDetail>;
+  executeRecommendedAction(id: number, actionKey: RecommendedActionKey, note?: string): Promise<RecommendedActionResult>;
   tickSimulation(req?: TickRequest): Promise<TickResult>;
   injectScenario(req: InjectRequest): Promise<ScenarioResult>;
   resolveDataQuality(provider: string): Promise<{ resolved: number; provider: string }>;

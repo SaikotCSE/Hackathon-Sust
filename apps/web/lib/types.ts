@@ -192,6 +192,17 @@ export interface AlertDetail {
   };
 }
 
+export interface RecommendedActionResult extends AlertDetail {
+  executed_action?: string;
+  cash_support_request_id?: number;
+  cash_support_status?: string;
+  cash_support_amount?: number;
+  cash_support_calculation?: string;
+  cash_support_provider?: string;
+  cash_support_origin_alert_id?: number;
+  cash_support_reused?: boolean;
+}
+
 export interface AlertsList {
   alerts: AlertDetail[];
 }
@@ -235,7 +246,10 @@ export interface TickResult {
 export interface ScenarioResult {
   scenario_event_id: number;
   kind: string;
+  provider: string;
   intended_severity: string;
+  duration_minutes: number;
+  analysis_required: boolean;
 }
 
 export interface UserInfo {

@@ -1,299 +1,489 @@
 "use client";
-import React, { useState } from "react";
-import type { DashboardAlert, DashboardProvider, DashboardSummary } from "../lib/types";
+
+import React, { useEffect, useMemo, useState } from "react";
+import type {
+  CashSupportRequest,
+  DashboardAlert,
+  DashboardSummary,
+} from "../lib/types";
 import { Card } from "./Primitives";
-import { client } from "../lib/client";
+import { client, type RecommendedActionKey } from "../lib/client";
 import { usePrincipal } from "./PrincipalProvider";
 import { canPerformRecommendedAction } from "../lib/rbac";
-import type { RecommendedActionKey } from "../lib/client";
 
 const CLOSED_STATUSES = new Set<DashboardAlert["status"]>(["resolved", "closed"]);
+const ACTIVE_SUPPORT_STATUSES = new Set<CashSupportRequest["status"]>([
+  "requested",
+  "acknowledged",
+  "approved",
+]);
 
-// Action key → label, color, hint. Mirrors the catalog in config/decision-weights.json.
-const ACTION_STYLE: Record<string, { label: string; color: string; hint: string; icon: string }> = {
-  notify_ops:               { label: "Notify Operations",            color: "#0ea5e9", hint: "Hand the case to Provider Operations for triage.", icon: "📣" },
-  assign_field_officer:     { label: "Assign Field Officer",         color: "#16a34a", hint: "Dispatch a field officer to top up or verify stock.", icon: "🚚" },
-  request_cash_support:     { label: "Request Cash Support",         color: "#ea580c", hint: "Open a cash-support ticket with the provider.", icon: "💵" },
-  monitor:                  { label: "Monitor",                       color: "#64748b", hint: "Keep watching — no immediate action.", icon: "👀" },
-  risk_review:              { label: "Escalate to Risk Review",      color: "#7c3aed", hint: "Requests advisory evidence review and further-investigation guidance.", icon: "⚖️" },
-  data_quality_followup:    { label: "Follow up with provider feed",color: "#0891b2", hint: "Provider feed is degraded — chase the integration team.", icon: "🔌" },
+type RankedAction = { key: string; label: string; weight: number };
+type DecisionItem = {
+  key: string;
+  kind: "alert" | "forecast";
+  alertId?: number;
+  severity: string;
+  priorityScore: number;
+  provider: string | null;
+  title: string;
+  summary: string;
+  reasons: string[];
+  confidence: number;
+  recommended: RankedAction[];
+  ownerRole: string;
+  ownerLabel: string;
+  status: string;
+};
+
+const ACTION_STYLE: Record<string, { label: string; color: string; hint: string; icon: string; owner: string }> = {
+  notify_ops: {
+    label: "Notify Operations",
+    color: "#0ea5e9",
+    hint: "Send a durable hand-off to Provider Operations for triage.",
+    icon: "📣",
+    owner: "Agent or Operations",
+  },
+  assign_field_officer: {
+    label: "Assign Field Officer",
+    color: "#16a34a",
+    hint: "Dispatch a field officer to verify service readiness and stock.",
+    icon: "🚚",
+    owner: "Operations",
+  },
+  request_cash_support: {
+    label: "Request Provider Liquidity Support",
+    color: "#ea580c",
+    hint: "Create a forecast-sized request for this provider only. No funds move automatically.",
+    icon: "💵",
+    owner: "Agent or Operations",
+  },
+  monitor: {
+    label: "Record Monitoring",
+    color: "#64748b",
+    hint: "Record the decision to keep watching without changing the case state.",
+    icon: "👀",
+    owner: "Current stakeholder",
+  },
+  risk_review: {
+    label: "Escalate to Risk Review",
+    color: "#7c3aed",
+    hint: "Request independent evidence review; this is not a wrongdoing determination.",
+    icon: "⚖️",
+    owner: "Operations",
+  },
+  data_quality_followup: {
+    label: "Follow Up on Provider Feed",
+    color: "#0891b2",
+    hint: "Route the degraded feed to the responsible provider integration team.",
+    icon: "🔌",
+    owner: "Provider or Operations",
+  },
 };
 
 const SEV_BG: Record<string, string> = {
   critical: "#fee2e2",
-  high:     "#ffedd5",
-  low:      "#fef9c3",
-  normal:   "#dcfce7",
+  high: "#ffedd5",
+  low: "#fef9c3",
+  normal: "#dcfce7",
 };
 const SEV_FG: Record<string, string> = {
   critical: "#991b1b",
-  high:     "#9a3412",
-  low:      "#854d0e",
-  normal:   "#166534",
+  high: "#9a3412",
+  low: "#854d0e",
+  normal: "#166534",
 };
 
-function sevBg(s?: string) { return SEV_BG[s ?? "normal"] ?? SEV_BG.normal; }
-function sevFg(s?: string) { return SEV_FG[s ?? "normal"] ?? SEV_FG.normal; }
-
-/**
- * Pick the single top fused recommendation for the dashboard.
- * Priority: highest-priority non-resolved alert → fallback to the worst
- * provider health (liquidity-only signal even with no alert) → all-clear.
- */
-function pickTopRecommendation(d: DashboardSummary): {
-  kind: "alert" | "liquidity" | "clear";
-  alertId?: number;
-  severity?: string;
-  priorityScore?: number;
-  provider?: string | null;
-  title?: string;
-  summary?: string;
-  reasons?: string[];
-  confidence?: number;
-  recommended?: Array<{ key: string; label: string; weight: number }>;
-  ownerRole?: string;
-  ownerLabel?: string;
-  fusedExplanation?: string;
-  status?: string;
-  evidence?: Array<{ source: string; rule?: string; text: string }>;
-} {
-  const openAlerts = (d.alerts ?? []).filter(a => !CLOSED_STATUSES.has(a.status));
-  const top = openAlerts.slice().sort((a, b) => b.priority_score - a.priority_score)[0];
-
-  if (top) {
-    return {
-      kind: "alert",
-      alertId: top.id,
-      severity: top.severity,
-      priorityScore: top.priority_score,
-      provider: top.provider,
-      title: top.title,
-      summary: top.summary,
-      confidence: top.confidence,
-      ownerRole: top.owner_role,
-      ownerLabel: top.owner_label,
-      reasons: top.reasons,
-      evidence: top.evidence,
-      recommended: top.recommended_actions,
-      fusedExplanation: top.fused_explanation,
-      status: top.status,
-    };
-  }
-
-  // No alerts — fall back to the worst projected pressure on any provider.
-  const providers = (d.providers ?? []).filter(p => p.provider !== "physical");
-  const physical  = (d.providers ?? []).find(p => p.provider === "physical");
-  const allRows: DashboardProvider[] = [...providers, ...(physical ? [physical] : [])];
-  const worst = allRows
-    .filter((p): p is DashboardProvider => p.hours_to_shortage != null)
-    .sort((a, b) => (a.hours_to_shortage as number) - (b.hours_to_shortage as number))[0];
-
-  if (worst) {
-    const hrs = worst.hours_to_shortage as number;
-    if (hrs < 6) {
-      const sev = hrs < 0.5 ? "critical" : hrs < 2 ? "high" : "low";
-      return {
-        kind: "liquidity",
-        severity: sev,
-        provider: worst.provider,
-        title: `${(worst.provider || "").toUpperCase()} projected to deplete soon`,
-        summary: `No open alert yet — but the burn-rate forecast shows the balance may run out in ${worst.shortage_eta_human ?? "—"}.`,
-        confidence: worst.forecast_confidence,
-      };
-    }
-  }
-
-  return { kind: "clear" };
+function sevBg(severity?: string) {
+  return SEV_BG[severity ?? "normal"] ?? SEV_BG.normal;
 }
 
-/**
- * Map a top-level recommendation onto ranked suggested actions,
- * using the same selection rules as the orchestrator (so the UI and
- * the server stay in sync).
- */
-function deriveActions(rec: ReturnType<typeof pickTopRecommendation>): Array<{ key: string; label: string; weight: number }> {
-  if (rec.kind === "alert") {
-    // Server already computed these — but we don't have them on the dashboard
-    // summary (only on the AlertDetail), so reconstruct from severity + provider.
-    const sev = rec.severity ?? "low";
-    const isAnomaly = (rec.title ?? "").toLowerCase().includes("unusual")
-                   || (rec.summary ?? "").toLowerCase().includes("anomaly");
-    const isDq = (rec.summary ?? "").toLowerCase().includes("feed quality");
-    const out: Array<{ key: string; label: string; weight: number }> = [];
+function sevFg(severity?: string) {
+  return SEV_FG[severity ?? "normal"] ?? SEV_FG.normal;
+}
 
-    if (sev === "critical" || sev === "high") {
-      out.push({ key: "notify_ops",            label: "Notify Operations",       weight: 0.97 });
-      out.push({ key: "assign_field_officer",  label: "Assign Field Officer",    weight: 0.94 });
-      out.push({ key: "request_cash_support",  label: "Request Cash Support",    weight: 0.90 });
-    } else if (sev === "low") {
-      out.push({ key: "notify_ops", label: "Notify Operations", weight: 0.97 });
-      out.push({ key: "monitor",    label: "Monitor",            weight: 0.72 });
-    } else {
-      out.push({ key: "monitor", label: "Monitor", weight: 0.72 });
-    }
-    if (isAnomaly) {
-      const filtered = out.filter(a => a.key !== "monitor");
-      filtered.push({ key: "risk_review", label: "Escalate to Risk Review", weight: 0.68 });
-      return filtered;
-    }
-    if (isDq) {
-      const filtered = out.filter(a => a.key !== "request_cash_support");
-      filtered.push({ key: "data_quality_followup", label: "Follow up with provider feed", weight: 0.55 });
-      return filtered;
-    }
-    return out;
+function fallbackActions(alert: DashboardAlert): RankedAction[] {
+  const owner = alert.initial_owner ?? "";
+  const providerCanReceiveSupport = Boolean(alert.provider && alert.provider !== "physical");
+
+  if (alert.confidence < 0.5) {
+    return owner === "data-quality"
+      ? [
+          { key: "monitor", label: "Monitor", weight: 0.72 },
+          { key: "data_quality_followup", label: "Follow up with provider feed", weight: 0.55 },
+        ]
+      : [{ key: "monitor", label: "Monitor", weight: 0.72 }];
   }
-
-  if (rec.kind === "liquidity") {
-    const sev = rec.severity ?? "low";
-    if (sev === "critical" || sev === "high") {
-      return [
-        { key: "notify_ops",           label: "Notify Operations",       weight: 0.97 },
-        { key: "assign_field_officer", label: "Assign Field Officer",    weight: 0.94 },
-        { key: "request_cash_support", label: "Request Cash Support",    weight: 0.90 },
-      ];
-    }
+  if (owner === "anomaly") {
     return [
-      { key: "notify_ops", label: "Notify Operations", weight: 0.97 },
-      { key: "monitor",    label: "Monitor",           weight: 0.72 },
+      { key: "risk_review", label: "Risk Review", weight: 0.68 },
+      { key: "monitor", label: "Monitor", weight: 0.72 },
     ];
   }
-
-  return [{ key: "monitor", label: "Monitor", weight: 0.72 }];
+  if (owner === "data-quality") {
+    return [
+      { key: "data_quality_followup", label: "Follow up with provider feed", weight: 0.55 },
+      { key: "monitor", label: "Monitor", weight: 0.72 },
+    ];
+  }
+  if (alert.severity === "critical" || alert.severity === "high") {
+    return [
+      { key: "notify_ops", label: "Notify Operations", weight: 0.97 },
+      ...(providerCanReceiveSupport
+        ? [{ key: "request_cash_support", label: "Request Provider Liquidity Support", weight: 0.90 }]
+        : []),
+      { key: "assign_field_officer", label: "Assign Field Officer", weight: 0.94 },
+    ];
+  }
+  return [
+    { key: "notify_ops", label: "Notify Operations", weight: 0.97 },
+    { key: "monitor", label: "Monitor", weight: 0.72 },
+  ];
 }
 
-function deriveOwner(rec: ReturnType<typeof pickTopRecommendation>): { role: string; label: string } {
-  if (rec.kind === "alert") {
-    return { role: rec.ownerRole ?? "ops", label: rec.ownerLabel ?? "Provider Operations" };
-  }
-  if (rec.kind === "liquidity") {
-    if (rec.severity === "critical") return { role: "ops", label: "Provider Operations / Network Coordination" };
-    return { role: "ops", label: "Provider Operations" };
-  }
-  return { role: "—", label: "—" };
+function buildDecisionQueue(data: DashboardSummary): DecisionItem[] {
+  const alerts = (data.alerts ?? [])
+    .filter(alert => !CLOSED_STATUSES.has(alert.status))
+    .slice()
+    .sort((left, right) => {
+      if (right.priority_score !== left.priority_score) return right.priority_score - left.priority_score;
+      return new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+    })
+    .map((alert): DecisionItem => ({
+      key: `alert:${alert.id}`,
+      kind: "alert",
+      alertId: alert.id,
+      severity: alert.severity,
+      priorityScore: alert.priority_score,
+      provider: alert.provider,
+      title: alert.title,
+      summary: alert.summary,
+      reasons: alert.reasons ?? [],
+      confidence: alert.confidence,
+      recommended: alert.recommended_actions?.length ? alert.recommended_actions : fallbackActions(alert),
+      ownerRole: alert.owner_role,
+      ownerLabel: alert.owner_label,
+      status: alert.status,
+    }));
+
+  if (alerts.length) return alerts;
+
+  // A forecast can become actionable before the next analysis tick creates
+  // a case. Surface every pressured provider, but do not pretend a workflow
+  // action was recorded until an alert/case exists.
+  return (data.providers ?? [])
+    .filter(provider => provider.hours_to_shortage != null && provider.hours_to_shortage < 6)
+    .slice()
+    .sort((left, right) => (left.hours_to_shortage ?? Infinity) - (right.hours_to_shortage ?? Infinity))
+    .map((provider): DecisionItem => {
+      const hours = provider.hours_to_shortage ?? 6;
+      const severity = hours < 0.5 ? "critical" : hours < 2 ? "high" : "low";
+      return {
+        key: `forecast:${provider.provider}`,
+        kind: "forecast",
+        severity,
+        priorityScore: data.overall_score ?? 0,
+        provider: provider.provider,
+        title: `${provider.provider.toUpperCase()} projected to deplete soon`,
+        summary: `The balance may run out in ${provider.shortage_eta_human ?? "under six hours"}. Run the next analysis tick to create an evidence-backed case before coordinating action.`,
+        reasons: provider.forecast_reasons ?? [],
+        confidence: provider.forecast_confidence,
+        recommended: [],
+        ownerRole: "ops",
+        ownerLabel: "Provider Operations",
+        status: "awaiting analysis",
+      };
+    });
+}
+
+function confidenceLabel(confidence: number) {
+  if (confidence >= 75) return "High";
+  if (confidence >= 50) return "Moderate";
+  return "Low";
 }
 
 export function DecisionRecommendationPanel({
   data,
+  supportRequests = [],
   onActionTaken,
+  onSupportChanged,
 }: {
   data: DashboardSummary;
+  supportRequests?: CashSupportRequest[];
   onActionTaken?: () => void;
+  onSupportChanged?: () => void;
 }) {
   const { principal } = usePrincipal();
-  const role = (principal?.role ?? "agent") as string;
-  const rec = pickTopRecommendation(data);
-  const actions = rec.kind === "alert" && rec.recommended?.length ? rec.recommended : deriveActions(rec);
-  const owner = deriveOwner(rec);
-  const conf = Math.round((rec.confidence ?? 0.95) * 100);
+  const role = principal?.role ?? "agent";
+  const decisions = useMemo(() => buildDecisionQueue(data), [data]);
+  const decisionSignature = decisions.map(item => item.key).join("|");
 
-  const actionable = actions.filter(a => canPerformRecommendedAction(role, a.key));
-  const primaryAction = actionable[0] ?? null;
-  const secondaryActions = actions.filter(a => a.key !== primaryAction?.key);
+  const [selectedKey, setSelectedKey] = useState<string | null>(decisions[0]?.key ?? null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [completedActions, setCompletedActions] = useState<Record<string, boolean>>({});
+  const [actedDecisions, setActedDecisions] = useState<Record<string, boolean>>({});
+  const [feedback, setFeedback] = useState<{ tone: "success" | "error"; message: string } | null>(null);
 
-  const [busy, setBusy] = useState<RecommendedActionKey | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [actionOk, setActionOk] = useState<RecommendedActionKey | null>(null);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  useEffect(() => {
+    setSelectedKey(current => {
+      if (current && decisions.some(item => item.key === current)) return current;
+      return decisions[0]?.key ?? null;
+    });
+  }, [decisionSignature]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function fireAction(actionKey: RecommendedActionKey) {
-    if (rec.kind !== "alert" || !rec.alertId) return;
-    setBusy(actionKey);
-    setActionError(null);
-    setActionOk(null);
-    setActionMessage(null);
+  const selected = decisions.find(item => item.key === selectedKey) ?? decisions[0];
+  const activeSupport = selected?.provider
+    ? supportRequests.find(request =>
+        request.provider === selected.provider && ACTIVE_SUPPORT_STATUSES.has(request.status),
+      )
+    : undefined;
+
+  function nextDecisionKey(currentKey: string): string | null {
+    if (decisions.length < 2) return null;
+    const currentIndex = decisions.findIndex(item => item.key === currentKey);
+    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % decisions.length : 0;
+    return decisions[nextIndex]?.key ?? null;
+  }
+
+  async function fireAction(decision: DecisionItem, actionKey: RecommendedActionKey) {
+    if (decision.kind !== "alert" || !decision.alertId) return;
+    const taskKey = `${decision.key}:${actionKey}`;
+    setBusy(taskKey);
+    setFeedback(null);
     try {
-      const result: any = await client.executeRecommendedAction(rec.alertId, actionKey);
-      setActionOk(actionKey);
-      setActionMessage(
-        actionKey === "request_cash_support" && result.cash_support_amount
-          ? `Sent a forecast-sized ৳${Number(result.cash_support_amount).toLocaleString()} request to ${String(rec.provider ?? "the provider").toUpperCase()}.`
-          : actionKey === "notify_ops"
-            ? "Operations received a durable case notification."
-            : "Action recorded in the case timeline."
-      );
+      const result = await client.executeRecommendedAction(decision.alertId, actionKey);
+      const provider = String(result.cash_support_provider ?? decision.provider ?? "the provider").toUpperCase();
+      const amount = result.cash_support_amount == null
+        ? null
+        : Number(result.cash_support_amount).toLocaleString();
+      const nextKey = nextDecisionKey(decision.key);
+      const next = decisions.find(item => item.key === nextKey);
+
+      setCompletedActions(current => ({ ...current, [taskKey]: true }));
+      setActedDecisions(current => ({ ...current, [decision.key]: true }));
+      if (nextKey) setSelectedKey(nextKey);
+
+      const actionMessage = actionKey === "request_cash_support"
+        ? result.cash_support_reused
+          ? `${provider} already has active support request #${result.cash_support_request_id}; no duplicate was created.`
+          : `Created a forecast-sized${amount ? ` ৳${amount}` : ""} support request for ${provider} only.`
+        : actionKey === "notify_ops"
+          ? "Operations received a durable case notification."
+          : "The action was recorded in the case timeline.";
+      setFeedback({
+        tone: "success",
+        message: `${actionMessage}${next ? ` Now showing the next priority: ${String(next.provider ?? "case").toUpperCase()} · ${next.title}` : ""}`,
+      });
       onActionTaken?.();
-    } catch (e: any) {
-      // The client throws raw `API <status> <path>: <body>` strings. Strip
-      // that prefix and turn the server's plain HTTPException detail into a
-      // human-friendly sentence — the panel surfaces recommendations, not
-      // raw stack traces.
-      const raw = String(e?.message || e);
-      const m = raw.match(/^API\s+\d+\s+[^:]+:\s*(.*)$/);
-      const detail = m ? m[1].replace(/^"|"$/g, "") : raw;
-      const friendly =
-        /Illegal transition/i.test(detail)
-          ? `This action isn't applicable to the case in its current state (${rec.kind === "alert" ? "see case state" : "no alert"}). The case may have already moved on — try another recommendation.`
-          : detail;
-      setActionError(friendly);
+      if (actionKey === "request_cash_support") onSupportChanged?.();
+    } catch (error: any) {
+      const raw = String(error?.message || error);
+      const match = raw.match(/^API\s+\d+\s+[^:]+:\s*(.*)$/);
+      const detail = match ? match[1].replace(/^"|"$/g, "") : raw;
+      setFeedback({
+        tone: "error",
+        message: /Illegal transition/i.test(detail)
+          ? `This step is not applicable while the case is ${decision.status.replaceAll("_", " ")}. Choose another recommended step.`
+          : detail,
+      });
     } finally {
       setBusy(null);
     }
   }
 
-  if (rec.kind === "clear") {
-    return <Card style={{ marginTop: 16, borderColor: "#bbf7d0" }}>
-      <div style={{ fontSize: 12, color: "#166534", textTransform: "uppercase", letterSpacing: 1, fontWeight: 700 }}>Decision support</div>
-      <div style={{ fontSize: 21, fontWeight: 750, color: "#166534", marginTop: 6 }}>No action needed</div>
-      <div style={{ color: "#475569", marginTop: 4 }}>No provider currently has an actionable liquidity or unusual-activity alert.</div>
-    </Card>;
+  if (!selected) {
+    return (
+      <Card style={{ marginTop: 16, borderColor: "#bbf7d0" }}>
+        <div style={{ fontSize: 12, color: "#166534", textTransform: "uppercase", letterSpacing: 1, fontWeight: 700 }}>Decision support</div>
+        <div style={{ fontSize: 21, fontWeight: 750, color: "#166534", marginTop: 6 }}>No action needed</div>
+        <div style={{ color: "#475569", marginTop: 4 }}>No provider currently has an actionable liquidity or unusual-activity case.</div>
+      </Card>
+    );
   }
 
-  const confidenceLabel = conf >= 75 ? "High" : conf >= 50 ? "Moderate" : "Low";
-  const primaryMeta = primaryAction ? (ACTION_STYLE[primaryAction.key] ?? { label: primaryAction.label, color: "#475569", hint: "", icon: "•" }) : null;
+  const conf = Math.round(selected.confidence * 100);
+  const providerCount = new Set(decisions.map(item => item.provider).filter(Boolean)).size;
 
   return (
-    <Card style={{ marginTop: 16, borderColor: rec.severity === "critical" ? "#fecaca" : "#cbd5e1", padding: 20 }}>
-      <div style={{ fontSize: 12, color: "#64748b", letterSpacing: 1, textTransform: "uppercase", fontWeight: 700 }}>Decision support</div>
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 7 }}>
-        <span style={{ background: sevBg(rec.severity), color: sevFg(rec.severity), padding: "4px 10px", borderRadius: 999, fontSize: 12, fontWeight: 800 }}>{(rec.severity ?? "low").toUpperCase()}</span>
-        <div style={{ fontSize: 21, fontWeight: 750 }}>{rec.title}</div>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 14 }}>
-        {[
-          ["Provider", String(rec.provider ?? "—").toUpperCase()],
-          ["Owner", owner.label],
-          ["Case status", String(rec.status ?? "awaiting case").replaceAll("_", " ")],
-          ["Confidence", `${confidenceLabel} · ${conf}%`],
-          ["Priority", `${rec.priorityScore ?? data.overall_score ?? 0}/100`],
-        ].map(([label, value]) => <div key={label} style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "9px 11px" }}>
-          <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: .6 }}>{label}</div>
-          <div style={{ fontSize: 13, fontWeight: 700, marginTop: 3 }}>{value}</div>
-        </div>)}
-      </div>
-
-      <div style={{ marginTop: 14, padding: "11px 13px", background: conf < 50 ? "#fff7ed" : "#f8fafc", borderLeft: `3px solid ${conf < 50 ? "#f59e0b" : "#64748b"}` }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", textTransform: "uppercase" }}>Why this recommendation</div>
-        <div style={{ fontSize: 14, color: "#334155", marginTop: 4 }}>{rec.summary}</div>
-        {(rec.reasons ?? []).slice(0, 2).map((reason, i) => <div key={i} style={{ fontSize: 12, color: "#64748b", marginTop: 3 }}>• {reason}</div>)}
-        {conf < 50 && <div style={{ fontSize: 12, color: "#9a3412", marginTop: 5, fontWeight: 650 }}>Low confidence: verify current balance and evidence before escalating.</div>}
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14, marginTop: 14 }}>
-        <div style={{ border: `1px solid ${primaryMeta?.color ?? "#cbd5e1"}`, borderRadius: 9, padding: 14 }}>
-          <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", fontWeight: 700 }}>Recommended for you</div>
-          {primaryAction && primaryMeta ? <>
-            <div style={{ fontSize: 16, fontWeight: 750, marginTop: 5 }}>{primaryMeta.icon} {primaryMeta.label}</div>
-            <div style={{ fontSize: 13, color: "#475569", marginTop: 3 }}>{primaryMeta.hint}</div>
-            <button onClick={() => fireAction(primaryAction.key as RecommendedActionKey)} disabled={busy === primaryAction.key || rec.kind !== "alert"} style={{ marginTop: 10, background: primaryMeta.color, color: "#fff", border: 0, borderRadius: 7, padding: "8px 14px", fontWeight: 700, cursor: "pointer" }}>
-              {busy === primaryAction.key ? "Working…" : actionOk === primaryAction.key ? "✓ Completed" : primaryMeta.label}
-            </button>
-          </> : <div style={{ color: "#64748b", marginTop: 6 }}>No action is assigned to your role. The named owner will receive it in their inbox.</div>}
+    <Card style={{ marginTop: 16, borderColor: selected.severity === "critical" ? "#fecaca" : "#cbd5e1", padding: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 12, color: "#64748b", letterSpacing: 1, textTransform: "uppercase", fontWeight: 700 }}>Decision support · priority queue</div>
+          <div style={{ fontSize: 21, fontWeight: 750, marginTop: 5 }}>
+            {decisions.length} {decisions.length === 1 ? "active decision" : "active decisions"} across {providerCount} {providerCount === 1 ? "provider" : "providers"}
+          </div>
+          <div style={{ color: "#64748b", fontSize: 13, marginTop: 3 }}>
+            Highest priority is selected first. A successful action advances to the next case; completed cases remain available for their other steps.
+          </div>
         </div>
-        <div style={{ border: "1px solid #e2e8f0", borderRadius: 9, padding: 14 }}>
-          <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", fontWeight: 700 }}>Other coordinated steps</div>
-          <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 8 }}>
-            {secondaryActions.map(a => {
-              const meta = ACTION_STYLE[a.key] ?? { label: a.label, color: "#64748b", hint: "", icon: "•" };
-              const allowed = canPerformRecommendedAction(role, a.key) && rec.kind === "alert";
-              return <button key={a.key} disabled={!allowed || busy === a.key} onClick={() => fireAction(a.key as RecommendedActionKey)} title={allowed ? meta.hint : `Assigned to another stakeholder`} style={{ background: allowed ? "#fff" : "#f1f5f9", color: allowed ? meta.color : "#94a3b8", border: `1px solid ${allowed ? meta.color : "#cbd5e1"}`, borderRadius: 7, padding: "6px 9px", fontSize: 12, fontWeight: 650, cursor: allowed ? "pointer" : "not-allowed" }}>{meta.label}</button>;
+        <span style={{ background: "#eff6ff", color: "#1d4ed8", borderRadius: 999, padding: "6px 10px", fontSize: 12, fontWeight: 750 }}>
+          {decisions.filter(item => actedDecisions[item.key]).length}/{decisions.length} cases acted on
+        </span>
+      </div>
+
+      {feedback && (
+        <div style={{
+          marginTop: 12,
+          color: feedback.tone === "success" ? "#166534" : "#b91c1c",
+          background: feedback.tone === "success" ? "#f0fdf4" : "#fef2f2",
+          border: `1px solid ${feedback.tone === "success" ? "#bbf7d0" : "#fecaca"}`,
+          padding: "9px 11px",
+          borderRadius: 8,
+          fontSize: 13,
+        }}>
+          {feedback.tone === "success" ? "✓ " : ""}{feedback.message}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(250px, 0.7fr) minmax(0, 2fr)", gap: 16, marginTop: 16 }}>
+        <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, padding: 10, alignSelf: "start" }}>
+          <div style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", fontWeight: 750, padding: "2px 3px 8px" }}>Cases in priority order</div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {decisions.map((item, index) => {
+              const isSelected = item.key === selected.key;
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  aria-pressed={isSelected}
+                  onClick={() => setSelectedKey(item.key)}
+                  style={{
+                    textAlign: "left",
+                    width: "100%",
+                    background: isSelected ? "#eff6ff" : "#fff",
+                    border: `1px solid ${isSelected ? "#60a5fa" : "#e2e8f0"}`,
+                    borderRadius: 9,
+                    padding: 10,
+                    cursor: "pointer",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                    <span style={{ color: "#64748b", fontSize: 11, fontWeight: 750 }}>#{index + 1} · PRIORITY {item.priorityScore}</span>
+                    {actedDecisions[item.key] && <span style={{ color: "#166534", fontSize: 11, fontWeight: 750 }}>✓ ACTED</span>}
+                  </div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 5 }}>
+                    <span style={{ background: sevBg(item.severity), color: sevFg(item.severity), padding: "2px 6px", borderRadius: 999, fontSize: 10, fontWeight: 800 }}>{item.severity.toUpperCase()}</span>
+                    <b style={{ fontSize: 12 }}>{String(item.provider ?? "shared").toUpperCase()}</b>
+                    {item.alertId && <span style={{ color: "#94a3b8", fontSize: 11 }}>Alert #{item.alertId}</span>}
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 700, marginTop: 5, lineHeight: 1.25 }}>{item.title}</div>
+                  <div style={{ color: "#64748b", fontSize: 11, marginTop: 4 }}>{item.recommended.length} coordinated {item.recommended.length === 1 ? "step" : "steps"}</div>
+                </button>
+              );
             })}
           </div>
         </div>
+
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ background: sevBg(selected.severity), color: sevFg(selected.severity), padding: "4px 10px", borderRadius: 999, fontSize: 12, fontWeight: 800 }}>{selected.severity.toUpperCase()}</span>
+            <div style={{ fontSize: 20, fontWeight: 750 }}>{selected.title}</div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(135px, 1fr))", gap: 9, marginTop: 12 }}>
+            {[
+              ["Provider target", String(selected.provider ?? "—").toUpperCase()],
+              ["Responsible owner", selected.ownerLabel],
+              ["Case status", selected.status.replaceAll("_", " ")],
+              ["Confidence", `${confidenceLabel(conf)} · ${conf}%`],
+              ["Priority", `${selected.priorityScore}/100`],
+            ].map(([label, value]) => (
+              <div key={label} style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "9px 10px" }}>
+                <div style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, marginTop: 3 }}>{value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 12, padding: "10px 12px", background: conf < 50 ? "#fff7ed" : "#f8fafc", borderLeft: `3px solid ${conf < 50 ? "#f59e0b" : "#64748b"}` }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#475569", textTransform: "uppercase" }}>Evidence-based rationale</div>
+            <div style={{ fontSize: 13, color: "#334155", marginTop: 4 }}>{selected.summary}</div>
+            {selected.reasons.slice(0, 3).map((reason, index) => <div key={index} style={{ fontSize: 12, color: "#64748b", marginTop: 3 }}>• {reason}</div>)}
+            {conf < 50 && <div style={{ fontSize: 12, color: "#9a3412", marginTop: 5, fontWeight: 650 }}>Low confidence: verify the current balance and evidence before escalation.</div>}
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 12, color: "#475569", textTransform: "uppercase", letterSpacing: 0.6, fontWeight: 800 }}>All coordinated next steps</div>
+              {selected.provider && <div style={{ fontSize: 12, color: "#9a3412", fontWeight: 700 }}>Provider-scoped: {selected.provider.toUpperCase()} only</div>}
+            </div>
+
+            {selected.kind === "forecast" ? (
+              <div style={{ border: "1px dashed #94a3b8", borderRadius: 9, padding: 13, marginTop: 8, color: "#475569", fontSize: 13 }}>
+                This is a forecast watch, not an open case. Run the analysis tick; executable actions appear only after the platform creates an evidence-backed alert and case.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 9, marginTop: 8 }}>
+                {selected.recommended.map((action, index) => {
+                  const meta = ACTION_STYLE[action.key] ?? {
+                    label: action.label,
+                    color: "#64748b",
+                    hint: "Record this recommended case step.",
+                    icon: "•",
+                    owner: selected.ownerLabel,
+                  };
+                  const taskKey = `${selected.key}:${action.key}`;
+                  const isBusy = busy === taskKey;
+                  const isCompleted = Boolean(completedActions[taskKey]);
+                  const isSupportAction = action.key === "request_cash_support";
+                  const hasActiveSupport = isSupportAction && Boolean(activeSupport);
+                  const allowed = canPerformRecommendedAction(role, action.key);
+                  const disabled = Boolean(busy) || !allowed || isCompleted || hasActiveSupport;
+                  const actionLabel = isSupportAction && selected.provider
+                    ? `Request ${selected.provider.toUpperCase()} Support`
+                    : meta.label;
+
+                  return (
+                    <div key={action.key} style={{ border: `1px solid ${isCompleted || hasActiveSupport ? "#86efac" : "#e2e8f0"}`, background: isCompleted || hasActiveSupport ? "#f0fdf4" : "#fff", borderRadius: 9, padding: 12 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 11, color: "#64748b", fontWeight: 750 }}>STEP {index + 1}</span>
+                        <span style={{ fontSize: 10, color: allowed ? meta.color : "#64748b", background: "#f8fafc", borderRadius: 999, padding: "3px 6px", fontWeight: 700 }}>{allowed ? "YOUR ACTION" : meta.owner.toUpperCase()}</span>
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 750, marginTop: 6 }}>{meta.icon} {meta.label}</div>
+                      <div style={{ fontSize: 12, color: "#64748b", marginTop: 4, minHeight: 32 }}>{meta.hint}</div>
+                      {isSupportAction && selected.provider && (
+                        <div style={{ fontSize: 11, color: "#9a3412", marginTop: 5, fontWeight: 700 }}>Target: {selected.provider.toUpperCase()} · separate provider balance</div>
+                      )}
+                      <button
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => fireAction(selected, action.key as RecommendedActionKey)}
+                        title={!allowed ? `Assigned to ${meta.owner}` : meta.hint}
+                        style={{
+                          marginTop: 9,
+                          width: "100%",
+                          background: disabled ? "#e2e8f0" : meta.color,
+                          color: disabled ? "#64748b" : "#fff",
+                          border: 0,
+                          borderRadius: 7,
+                          padding: "8px 10px",
+                          fontSize: 12,
+                          fontWeight: 750,
+                          cursor: disabled ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        {isBusy
+                          ? "Working…"
+                          : isCompleted
+                            ? "✓ Recorded"
+                            : hasActiveSupport
+                              ? `Request #${activeSupport?.id} · ${activeSupport?.status}`
+                              : allowed
+                                ? actionLabel
+                                : `Assigned to ${meta.owner}`}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
-      {actionMessage && <div style={{ marginTop: 10, color: "#166534", background: "#f0fdf4", padding: "8px 10px", borderRadius: 7, fontSize: 13 }}>✓ {actionMessage}</div>}
-      {actionError && <div style={{ marginTop: 10, color: "#b91c1c", background: "#fef2f2", padding: "8px 10px", borderRadius: 7, fontSize: 13 }}>{actionError}</div>}
-      <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 10 }}>Advisory workflow: every action is role-authorized and recorded. Nothing happens automatically.</div>
+
+      <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 12 }}>
+        Advisory workflow: actions are role-authorized, provider-scoped, and recorded. The platform never moves funds or makes a final wrongdoing determination.
+      </div>
     </Card>
   );
 }

@@ -71,6 +71,59 @@ class CashSupportWorkflowTests(unittest.TestCase):
         case = self.session.exec(select(Case).where(Case.alert_id == self.alert_id)).first()
         self.assertIn("cash_support_fulfilled", case.audit_json)
 
+    def test_selected_alert_routes_an_independent_request_to_each_provider(self):
+        nagad_alert = Alert(
+            agent_id=self.agent_id, provider="nagad", severity="high", priority_score=70,
+            title="Nagad pressure", summary="shortage likely", confidence=.88,
+            owner_role="ops", owner_label="Ops", initial_owner="liquidity",
+        )
+        self.session.add(nagad_alert); self.session.commit(); self.session.refresh(nagad_alert)
+        self.session.add(Case(alert_id=nagad_alert.id, state="assigned", owner_role="ops", owner_label="Ops"))
+        self.session.add(ProviderBalance(agent_id=self.agent_id, provider="nagad", balance=2_000))
+        self.session.add(ForecastSnapshot(
+            agent_id=self.agent_id, provider="nagad", hours_to_shortage=1.5,
+            confidence=.88, method="rate_projection", data_quality=1,
+            burn_rate_per_min=25,
+        ))
+        self.session.commit()
+
+        agent = Principal("agent", "Agent", "agent", None, None, self.agent_id)
+        bkash_result = execute_recommended_action(
+            self.alert_id, {"action_key": "request_cash_support"}, agent, self.session,
+        )
+        nagad_result = execute_recommended_action(
+            nagad_alert.id, {"action_key": "request_cash_support"}, agent, self.session,
+        )
+
+        self.assertEqual(bkash_result["cash_support_provider"], "bkash")
+        self.assertEqual(nagad_result["cash_support_provider"], "nagad")
+        self.assertNotEqual(
+            bkash_result["cash_support_request_id"],
+            nagad_result["cash_support_request_id"],
+        )
+        requests = self.session.exec(select(CashSupportRequest)).all()
+        self.assertEqual({row.provider for row in requests}, {"bkash", "nagad"})
+
+        nagad_provider = Principal("provider_nagad", "Nagad", "provider", "nagad", None)
+        nagad_inbox = list_requests(principal=nagad_provider, session=self.session)["requests"]
+        self.assertEqual([row["provider"] for row in nagad_inbox], ["nagad"])
+
+    def test_repeated_request_reuses_active_outlet_provider_ticket(self):
+        agent = Principal("agent", "Agent", "agent", None, None, self.agent_id)
+        first = execute_recommended_action(
+            self.alert_id, {"action_key": "request_cash_support"}, agent, self.session,
+        )
+        second = execute_recommended_action(
+            self.alert_id, {"action_key": "request_cash_support"}, agent, self.session,
+        )
+
+        self.assertFalse(first["cash_support_reused"])
+        self.assertTrue(second["cash_support_reused"])
+        self.assertEqual(first["cash_support_request_id"], second["cash_support_request_id"])
+        self.assertEqual(len(self.session.exec(select(CashSupportRequest)).all()), 1)
+        case = self.session.exec(select(Case).where(Case.alert_id == self.alert_id)).first()
+        self.assertEqual(case.audit_json.count("cash_support_requested_from_provider"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

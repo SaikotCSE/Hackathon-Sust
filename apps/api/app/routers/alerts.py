@@ -476,7 +476,7 @@ _RECOMMENDED_ACTIONS: dict = {
     # High-level verb the UI shows → (allowed_roles, transition_or_None, default_note)
     "notify_ops":              (("agent", "ops"),               None,       "Notify Operations: hand-off to Provider Operations for triage."),
     "assign_field_officer":    (("ops",),                        "ack",      "Assign Field Officer: dispatched to verify service readiness."),
-    "request_cash_support":    (("agent", "ops"),               None,       "Request Cash Support: sent to the financial service provider for approved coordination."),
+    "request_cash_support":    (("agent", "ops"),               None,       "Request Provider Liquidity Support: sent to the selected financial service provider for approved coordination."),
     "monitor":                 (("agent", "ops", "risk", "provider"), None, "Monitor: kept watch — no immediate action."),
     "risk_review":             (("ops",),                        "escalate", "Risk Review: forwarded to Risk / Compliance for independent review."),
     "data_quality_followup":   (("provider", "ops"),            "review",   "Follow up with provider feed: feed degraded — chasing the integration team."),
@@ -547,43 +547,65 @@ def execute_recommended_action(
             raise HTTPException(400, "cash support must target a financial service provider")
         if principal.role == "agent" and principal.agent_id != a.agent_id:
             raise HTTPException(403, "agents may request support only for their own outlet")
+        # A support workflow belongs to one outlet/provider position, not to
+        # whichever alert happens to be at the top of the dashboard. Reuse an
+        # active request for the same outlet + provider so two related alerts
+        # cannot create duplicate tickets, while a Nagad alert can still open
+        # a Nagad request even when a bKash request already exists.
         active = session.exec(
             select(CashSupportRequest)
-            .where(CashSupportRequest.alert_id == a.id)
+            .where(CashSupportRequest.agent_id == a.agent_id)
+            .where(CashSupportRequest.provider == a.provider)
             .where(CashSupportRequest.status.in_(["requested", "acknowledged", "approved"]))
             .order_by(CashSupportRequest.created_at.desc())
         ).first()
+        reused = active is not None
         if active is None:
             active = CashSupportRequest(
                 alert_id=a.id, agent_id=a.agent_id, provider=a.provider,
                 requested_by=principal.username, note=note_text,
             )
             session.add(active)
-        try:
-            size_request(session, active, override_amount=payload.get("amount"))
-        except ValueError as exc:
-            raise HTTPException(409, str(exc))
-        if not active.amount or active.amount <= 0:
-            raise HTTPException(409, "forecast indicates no additional provider support is currently required")
-        note_text = f"{note_text} Requested {active.amount:,.0f} BDT. {active.calculation}"
-        notes = json.loads(case.notes_json or "[]")
-        audit = json.loads(case.audit_json or "[]")
-        now_iso = datetime.utcnow().isoformat()
-        notes.append({"ts": now_iso, "role": principal.role, "user": principal.username, "text": note_text})
-        audit.append({"ts": now_iso, "from_state": case.state, "to_state": case.state,
-                      "actor": principal.username, "actor_role": principal.role,
-                      "reason": "cash_support_requested_from_provider",
-                      "owner_from": case.owner_role, "owner_to": case.owner_role})
-        case.notes_json, case.audit_json, case.updated_at = json.dumps(notes), json.dumps(audit), datetime.utcnow()
-        session.add(case)
-        session.commit()
+            try:
+                size_request(session, active, override_amount=payload.get("amount"))
+            except ValueError as exc:
+                raise HTTPException(409, str(exc))
+            if not active.amount or active.amount <= 0:
+                raise HTTPException(409, "forecast indicates no additional provider support is currently required")
+            note_text = f"{note_text} Requested {active.amount:,.0f} BDT from {a.provider.upper()}. {active.calculation}"
+            notes = json.loads(case.notes_json or "[]")
+            audit = json.loads(case.audit_json or "[]")
+            now_iso = datetime.utcnow().isoformat()
+            notes.append({"ts": now_iso, "role": principal.role, "user": principal.username, "text": note_text})
+            audit.append({"ts": now_iso, "from_state": case.state, "to_state": case.state,
+                          "actor": principal.username, "actor_role": principal.role,
+                          "reason": "cash_support_requested_from_provider",
+                          "provider": a.provider,
+                          "owner_from": case.owner_role, "owner_to": case.owner_role})
+            case.notes_json, case.audit_json, case.updated_at = json.dumps(notes), json.dumps(audit), datetime.utcnow()
+            session.add(case)
+            session.commit()
+        elif not active.amount or active.amount <= 0:
+            # Defensive repair for legacy/incomplete active rows. A normal
+            # idempotent click returns the original request unchanged.
+            try:
+                size_request(session, active)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc))
+            if not active.amount or active.amount <= 0:
+                raise HTTPException(409, "forecast indicates no additional provider support is currently required")
+            session.commit()
         session.refresh(active)
         out = _serialize_alert(a)
+        out["case"] = _case_block(case, session)
         out["executed_action"] = action_key
         out["cash_support_request_id"] = active.id
         out["cash_support_status"] = active.status
         out["cash_support_amount"] = active.amount
         out["cash_support_calculation"] = active.calculation
+        out["cash_support_provider"] = active.provider
+        out["cash_support_origin_alert_id"] = active.alert_id
+        out["cash_support_reused"] = reused
         return out
 
     if transition_action == "ack":

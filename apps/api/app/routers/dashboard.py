@@ -9,13 +9,14 @@ calls for — not just CSS theming.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from ..db import get_session
-from ..models.database import Agent, Alert, AnomalyEvent, BalanceHistory
+from ..models.database import Agent, Alert, AnomalyEvent, BalanceHistory, OperationalContextEvent
 from ..services.auth import Principal, current_principal
 from ..services.liquidity import rate_projection
 from ..services.snapshots import agent_snapshot, batch_agent_snapshots, overall_score
@@ -57,7 +58,33 @@ def overall_score_for_provider(
     provider blocks (used when we re-score after applying the management
     provider filter — we may end up with only 1 or 2 providers per agent
     instead of the full three)."""
-    return overall_score(balances, forecasts, data_quality_by_provider)
+    # Rebuild the small forecast objects from the already-filtered provider
+    # blocks. Passing an empty forecast map made every provider filter look
+    # "unknown" even when a current provider ETA was on screen.
+    class _FilteredForecast:
+        pass
+
+    filtered_balances = {}
+    filtered_forecasts = {}
+    filtered_dq = {}
+    for block in providers_out:
+        prov = block.get("provider")
+        if not prov:
+            continue
+        filtered_balances[prov] = float(block.get("balance") or 0.0)
+        filtered_dq[prov] = float(block.get("data_quality") or 0.0)
+        forecast = _FilteredForecast()
+        forecast.hours_to_shortage = block.get("hours_to_shortage")
+        forecast.data_quality = filtered_dq[prov]
+        forecast.confidence = float(block.get("forecast_confidence") or 0.0)
+        forecast.ts = datetime.utcnow()
+        forecast.summary = (
+            "stable — no draining"
+            if block.get("forecast_state") == "stable"
+            else str(block.get("forecast_summary") or "")
+        )
+        filtered_forecasts[prov] = forecast
+    return overall_score(filtered_balances, filtered_forecasts, filtered_dq)
 
 
 router = APIRouter(tags=["dashboard"])
@@ -91,7 +118,7 @@ def _enforce_provider_wall(snap: dict, principal: Principal) -> None:
     For a Financial Service Provider principal we must never expose another
     provider's balances, burn rate, hours-to-shortage, or alerts. The earlier
     implementation only nulled a few fields and left the cross-provider
-    numerics visible (combined pool, other-provider blocks, free-text reason
+    numerics visible (cross-position pressure, other-provider blocks, free-text reason
     strings, embedded alert list). This implementation rebuilds the snapshot
     from the principal's own column and drops everything else.
     """
@@ -112,8 +139,9 @@ def _enforce_provider_wall(snap: dict, principal: Principal) -> None:
                 own_block = prov_block
         snap["providers"] = [own_block] if own_block else []
 
-    # ---- combined pool block: fundamentally cross-provider; drop entirely. ---
-    snap.pop("combined", None)
+    # ---- aggregate pressure spans positions; provider principals receive only
+    # their own position and therefore do not receive this cross-position block.
+    snap.pop("aggregate", None)
 
     # ---- physical cash belongs to the agent's drawer, not to a provider.
     # A provider principal never needs the cross-agent cash figure, so we
@@ -126,6 +154,14 @@ def _enforce_provider_wall(snap: dict, principal: Principal) -> None:
     reason = snap.get("overall_reason") or ""
     if own_block is not None:
         hrs = own_block.get("hours_to_shortage")
+        health = own_block.get("health")
+        snap["overall_score"] = {
+            "normal": 20,
+            "low": 45,
+            "high": 70,
+            "critical": 95,
+            "unknown": 60,
+        }.get(str(health), 60)
         if hrs is None:
             own_reason = "your provider's projection is currently unavailable"
         elif hrs < 0.5:
@@ -136,6 +172,7 @@ def _enforce_provider_wall(snap: dict, principal: Principal) -> None:
             own_reason = "your provider is within a healthy band"
         snap["overall_reason"] = own_reason
     else:
+        snap["overall_score"] = 60
         snap["overall_reason"] = (
             "your provider's data is not currently being delivered to this agent"
         )
@@ -211,6 +248,9 @@ def dashboard(
     }
 
     role = principal.role
+
+    if provider and provider not in (*PROVIDERS, "physical"):
+        raise HTTPException(status_code=400, detail="provider must be bkash, nagad, rocket, or physical")
 
     # ----- Provider: only their provider's column across the agents they cover
     if role == "provider" and principal.provider:
@@ -292,11 +332,7 @@ def dashboard(
                 snap["providers"] = kept
                 # Re-derive overall_score from the filtered set so the rollup
                 # is consistent with what the user sees.
-                from ..services.snapshots import _provider_health
-                p_balances = {p["provider"]: p.get("balance") or 0.0 for p in kept}
-                p_forecasts = {}
-                dq_map = {p["provider"]: p.get("data_quality") or 1.0 for p in kept}
-                score, reason = overall_score_for_provider(p_balances, p_forecasts, dq_map, kept)
+                score, reason = overall_score_for_provider({}, {}, {}, kept)
                 snap["overall_score"] = score
                 snap["overall_reason"] = reason
 
@@ -577,6 +613,8 @@ def dashboard(
 
     # ----- Agent: their own shop, enforced
     if role == "agent":
+        from datetime import datetime
+
         own_id = principal.agent_id or 1
         if principal.agent_id and agent_id != own_id:
             raise HTTPException(status_code=403,
@@ -584,6 +622,24 @@ def dashboard(
         snap = agent_snapshot(session, own_id)
         if not snap:
             return {"error": "agent not found"}
+        now = datetime.utcnow()
+        context_rows = session.exec(
+            select(OperationalContextEvent)
+            .where(OperationalContextEvent.agent_id == own_id)
+            .where(OperationalContextEvent.started_at <= now)
+            .where(OperationalContextEvent.ends_at >= now)
+            .order_by(OperationalContextEvent.started_at.desc())
+        ).all()
+        snap["operational_contexts"] = [
+            {
+                "kind": row.kind,
+                "provider": row.provider,
+                "note": row.note,
+                "source": row.source,
+                "ends_at": row.ends_at.isoformat(),
+            }
+            for row in context_rows
+        ]
         return {
             "view": "agent",
             "scope": {"agent_id": own_id},

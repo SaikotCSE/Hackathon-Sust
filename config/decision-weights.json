@@ -30,7 +30,7 @@
   "_actions": [
     { "key": "notify_ops",          "label": "Notify Operations",          "weight": 0.97 },
     { "key": "assign_field_officer","label": "Assign Field Officer",        "weight": 0.94 },
-    { "key": "request_cash_support","label": "Request Cash Support",        "weight": 0.90 },
+    { "key": "request_cash_support","label": "Request Provider Liquidity Support", "weight": 0.90 },
     { "key": "monitor",             "label": "Monitor",                     "weight": 0.72 },
     { "key": "risk_review",         "label": "Risk Review",                 "weight": 0.68 },
     { "key": "data_quality_followup","label": "Follow up with provider feed","weight": 0.55 }

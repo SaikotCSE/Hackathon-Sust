@@ -51,7 +51,15 @@ export default function AlertDetailPage() {
   async function saveRiskRecommendation() {
     if (!riskComment.trim()) return;
     setReviewBusy(true); setReviewError(null);
-    try { await client.recordRiskRecommendation(id, riskRecommendation, riskComment.trim()); setRiskComment(""); await mutate(); }
+    try {
+      await client.recordRiskRecommendation(id, riskRecommendation, riskComment.trim());
+      setRiskComment("");
+      if (riskRecommendation === "return_to_operations") {
+        window.location.assign("/dashboard");
+        return;
+      }
+      await mutate();
+    }
     catch (e: any) { setReviewError(String(e?.message || e)); }
     finally { setReviewBusy(false); }
   }
@@ -168,7 +176,7 @@ export default function AlertDetailPage() {
         <Card style={{ marginBottom: 12, borderColor: "#c4b5fd", background: "#faf8ff" }}>
           <h3 style={{ margin: 0, fontSize: 14 }}>Risk analyst investigation recommendation</h3>
           <p style={{ fontSize: 12, color: "#5b21b6", margin: "5px 0 10px" }}>
-            Advisory review only. This recommendation does not determine wrongdoing and cannot close or financially affect the case.
+            Advisory review only. This recommendation does not determine wrongdoing or financially affect the case. Risk may return the case to Operations for documented resolution and closure.
           </p>
           {data.case.risk_recommendation && (
             <div style={{ padding: 10, borderRadius: 7, background: "#ede9fe", fontSize: 13, marginBottom: 10 }}>

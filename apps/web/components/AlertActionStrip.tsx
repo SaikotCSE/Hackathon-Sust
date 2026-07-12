@@ -11,7 +11,7 @@ const ACTION_STYLE: Record<string, { label: string; color: string; hint: string 
   start:    { label: "Begin coordination", color: "#ea580c", hint: "Move reviewed case into active operational coordination." },
   resolve:  { label: "Resolve",           color: "#16a34a", hint: "Case handled — close out." },
   escalate: { label: "Escalate to risk",  color: "#7c3aed", hint: "Hands off to Risk / Compliance." },
-  close:    { label: "Close (compliance)", color: "#374151", hint: "Case closed — final." },
+  close:    { label: "Close case", color: "#374151", hint: "Operational follow-up is complete; close the case." },
 };
 
 export function AlertActionStrip({

@@ -237,7 +237,9 @@ def record_risk_recommendation(
     now = datetime.utcnow()
     label = allowed[recommendation]
     previous_state = case.state
-    case.state = "risk_review"
+    previous_owner = case.owner_role
+    returning_to_operations = recommendation == "return_to_operations"
+    case.state = "review" if returning_to_operations else "risk_review"
     case.risk_recommendation = recommendation
     case.risk_recommendation_note = comment
     case.risk_recommended_by = principal.username
@@ -246,25 +248,45 @@ def record_risk_recommendation(
     notes = json.loads(case.notes_json or "[]")
     audit = json.loads(case.audit_json or "[]")
     notes.append({"ts": now.isoformat(), "role": "risk", "user": principal.username, "text": f"{label}: {comment}"})
+    next_owner = "ops" if returning_to_operations else "risk"
     audit.append({
-        "ts": now.isoformat(), "from_state": previous_state, "to_state": "risk_review",
+        "ts": now.isoformat(), "from_state": previous_state, "to_state": case.state,
         "actor": principal.username, "actor_role": "risk",
         "reason": f"advisory_recommendation:{recommendation}: {comment}",
-        "owner_from": "risk", "owner_to": "risk",
+        "owner_from": previous_owner, "owner_to": next_owner,
     })
     case.notes_json, case.audit_json = json.dumps(notes), json.dumps(audit)
-    alert.status = "risk_review"
+    if returning_to_operations:
+        case.owner_role = "ops"
+        case.owner_label = "Provider Operations / Network Coordination — follow-up"
+        case.assigned_to = "Provider Operations queue"
+        case.assigned_contact_type = "operations"
+        alert.owner_role = case.owner_role
+        alert.owner_label = case.owner_label
+        alert.status = "under_review"
+    else:
+        alert.status = "risk_review"
     alert.updated_at = now
     session.add(case); session.add(alert)
     add_notification(
         session, alert=alert, case=case, recipient_role="ops",
         event="risk_advisory_recommendation",
-        message=f"Case #{case.id}: {label}. {comment}", actor=principal.username,
+        message=(
+            f"Case #{case.id} returned to Operations for documented follow-up: {comment}"
+            if returning_to_operations
+            else f"Case #{case.id}: {label}. {comment}"
+        ),
+        actor=principal.username,
     )
     add_notification(
         session, alert=alert, case=case, recipient_role="agent", recipient_agent_id=alert.agent_id,
         event="risk_review_updated",
-        message=f"Case #{case.id} remains under human review. Advisory status: {label}.", actor=principal.username,
+        message=(
+            f"Case #{case.id} returned to Operations for follow-up."
+            if returning_to_operations
+            else f"Case #{case.id} remains under human review. Advisory status: {label}."
+        ),
+        actor=principal.username,
     )
     session.commit(); session.refresh(case)
     return _case_block(case, session)

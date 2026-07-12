@@ -142,6 +142,65 @@ class CaseLifecycleTests(unittest.TestCase):
                 get_alert(self.provider_alert_id, principal=rocket, session=session)
             self.assertEqual(denied.exception.status_code, 403)
 
+    def test_escalated_case_can_return_to_operations_and_close(self):
+        with Session(self.engine) as session:
+            transition_case(
+                self.alert_id,
+                {"action": "ack", "note": "Operations accepted the case"},
+                self.ops,
+                session,
+            )
+            transition_case(
+                self.alert_id,
+                {"action": "review", "note": "Operations reviewed the evidence"},
+                self.ops,
+                session,
+            )
+            transition_case(
+                self.alert_id,
+                {"action": "escalate", "note": "Independent advisory review requested"},
+                self.ops,
+                session,
+            )
+            returned = record_risk_recommendation(
+                self.alert_id,
+                {
+                    "recommendation": "return_to_operations",
+                    "comment": "No automated conclusion; obtain one final outlet confirmation",
+                },
+                self.risk,
+                session,
+            )
+            self.assertEqual(returned["state"], "review")
+            self.assertEqual(returned["owner_role"], "ops")
+
+        with Session(self.engine) as session:
+            transition_case(
+                self.alert_id,
+                {"action": "start", "note": "Outlet confirmation requested"},
+                self.ops,
+                session,
+            )
+            transition_case(
+                self.alert_id,
+                {"action": "resolve", "note": "Operational follow-up completed"},
+                self.ops,
+                session,
+            )
+            final = transition_case(
+                self.alert_id,
+                {"action": "close", "note": "Closure recorded without a wrongdoing determination"},
+                self.ops,
+                session,
+            )
+            self.assertEqual(final["case"]["state"], "closed")
+            self.assertEqual(final["status"], "closed")
+            owner_changes = [
+                (row.get("owner_from"), row.get("owner_to"))
+                for row in final["case"]["audit"]
+            ]
+            self.assertIn(("risk", "ops"), owner_changes)
+
     def test_stakeholder_authority_boundaries_are_enforced(self):
         """A crafted API request must not bypass the stakeholder workflow."""
         agent = Principal("agent", "Agent", "agent", None, "Dhaka", self.agent_id)

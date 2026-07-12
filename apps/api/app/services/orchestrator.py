@@ -206,7 +206,9 @@ def build_alert_for_provider(
         alert.owner_label = fusion.owner_label
         alert.initial_owner = initial_owner
         alert.updated_at = datetime.utcnow()
-        alert.ground_truth_severity = fusion.severity
+        # Evaluation labels live only in ScenarioEvent. Never copy a model
+        # output into a field named ground truth.
+        alert.ground_truth_severity = None
     else:
         alert = Alert(
             agent_id=agent_id,
@@ -224,7 +226,7 @@ def build_alert_for_provider(
             owner_label=fusion.owner_label,
             initial_owner=initial_owner,
             status="open",
-            ground_truth_severity=fusion.severity,
+            ground_truth_severity=None,
         )
     session.add(alert)
     session.commit()

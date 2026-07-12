@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.models.database import Agent, ProviderBalance, ScenarioEvent, Transaction
+from app.models.database import Agent, OperationalContextEvent, ProviderBalance, ScenarioEvent, Transaction
 from app.services.anomaly import detect_anomalies
 from app.simulation.engine import ScenarioSpec, SimulationEngine
 
@@ -59,16 +59,43 @@ class AnomalyDetectionTests(unittest.TestCase):
         events = detect_anomalies(self.session, self.agent_id, "bkash")
         self.assertIn("structuring", {event.rule for event in events})
 
-    def test_declared_legitimate_high_volume_is_not_flagged(self):
-        for provider, kind in (("rocket", "salary_day"), ("nagad", "bkash_surge")):
-            self.session.add(ScenarioEvent(
-                agent_id=self.agent_id, provider=provider, kind=kind,
-                intended_severity="normal", is_anomaly_ground_truth=False,
-                duration_minutes=10, note="known legitimate demand",
+    def test_ground_truth_label_is_not_a_detector_input(self):
+        self.session.add(ScenarioEvent(
+            agent_id=self.agent_id, provider="rocket", kind="salary_day",
+            intended_severity="normal", is_anomaly_ground_truth=False,
+            duration_minutes=10, note="evaluation label only",
+        ))
+        self.session.commit()
+        self.add_transactions("rocket", [2375] * 6, "GT")
+        events = detect_anomalies(self.session, self.agent_id, "rocket")
+        self.assertIn("repeated_amount", {event.rule for event in events})
+
+    def test_observed_context_suppresses_only_compatible_volume_rules(self):
+        now = datetime.utcnow()
+        for i, amount in enumerate([700, 1100, 1750]):
+            self.session.add(Transaction(
+                agent_id=self.agent_id, provider="nagad", tx_type="cash_out",
+                amount=amount, counterparty_id=f"OLD{i}", area="Dhaka",
+                ts=now - timedelta(minutes=15, seconds=i),
             ))
-            self.session.commit()
-            self.add_transactions(provider, [700, 1100, 1750, 2400, 3200, 6800, 7600, 9200] * 2, "N")
-            self.assertEqual(detect_anomalies(self.session, self.agent_id, provider), [])
+        for i, amount in enumerate([2400, 3200, 6800, 7600, 9200, 1200, 2100, 3600, 8800]):
+            self.session.add(Transaction(
+                agent_id=self.agent_id, provider="nagad", tx_type="cash_out",
+                amount=amount, counterparty_id=f"NEW{i}", area="Dhaka",
+                ts=now - timedelta(seconds=20 - i),
+            ))
+        self.session.commit()
+        without_context = detect_anomalies(self.session, self.agent_id, "nagad")
+        self.assertIn("velocity_spike", {event.rule for event in without_context})
+
+        self.session.add(OperationalContextEvent(
+            agent_id=self.agent_id, provider="nagad", kind="salary_day",
+            note="Observed salary calendar", source="test-calendar",
+            started_at=now - timedelta(minutes=1), ends_at=now + timedelta(minutes=9),
+        ))
+        self.session.commit()
+        with_context = detect_anomalies(self.session, self.agent_id, "nagad")
+        self.assertNotIn("velocity_spike", {event.rule for event in with_context})
 
 
 if __name__ == "__main__":

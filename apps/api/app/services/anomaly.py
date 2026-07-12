@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple
 
 from sqlmodel import Session, select
 
-from ..models.database import AnomalyEvent, ScenarioEvent, Transaction
+from ..models.database import AnomalyEvent, OperationalContextEvent, Transaction
 
 
 # ---------------------------------------------------------------------------
@@ -46,23 +46,20 @@ def _tx_evidence(txs: List[Transaction], limit: int = 8) -> str:
     )
 
 
-def _legitimate_volume_context(session: Session, agent_id: int, provider: str) -> Optional[str]:
-    """Return a declared benign high-volume context active for this provider."""
-    now = datetime.utcnow()
-    rows = session.exec(
-        select(ScenarioEvent)
-        .where(ScenarioEvent.agent_id == agent_id)
-        .where(ScenarioEvent.kind.in_(["salary_day", "bkash_surge"]))
-        .where(ScenarioEvent.is_anomaly_ground_truth == False)  # noqa: E712
-        .order_by(ScenarioEvent.injected_at.desc())
-        .limit(20)
-    ).all()
-    for row in rows:
-        applies = row.kind == "salary_day" or row.provider == provider
-        duration = max(1, int(getattr(row, "duration_minutes", 5) or 5))
-        if applies and (now - row.injected_at).total_seconds() < duration * 60:
-            return row.kind
-    return None
+def active_operational_context(
+    session: Session, agent_id: int, provider: str, *, now: Optional[datetime] = None
+) -> Optional[OperationalContextEvent]:
+    """Return observable context without consulting evaluation labels."""
+    now = now or datetime.utcnow()
+    return session.exec(
+        select(OperationalContextEvent)
+        .where(OperationalContextEvent.agent_id == agent_id)
+        .where(OperationalContextEvent.provider == provider)
+        .where(OperationalContextEvent.started_at <= now)
+        .where(OperationalContextEvent.ends_at >= now)
+        .order_by(OperationalContextEvent.started_at.desc())
+        .limit(1)
+    ).first()
 
 
 def _recent_tx(session: Session, agent_id: int, provider: str, window_minutes: int):
@@ -311,13 +308,17 @@ def iforest_score(session: Session, agent_id: int, provider: str, hits: List[Rul
 def detect_anomalies(session: Session, agent_id: int, provider: str) -> List[AnomalyEvent]:
     import json
 
-    legitimate_context = _legitimate_volume_context(session, agent_id, provider)
+    operational_context = active_operational_context(session, agent_id, provider)
+    expected_volume_context = (
+        operational_context is not None
+        and operational_context.kind in {"salary_day", "demand_surge", "campaign", "local_event"}
+    )
     heads = [
-        None if legitimate_context else rule_repeated_amount(session, agent_id, provider),
-        None if legitimate_context else rule_velocity_spike(session, agent_id, provider),
-        None if legitimate_context else rule_structuring(session, agent_id, provider),
+        rule_repeated_amount(session, agent_id, provider),
+        None if expected_volume_context else rule_velocity_spike(session, agent_id, provider),
+        rule_structuring(session, agent_id, provider),
         rule_balance_anomaly(session, agent_id, provider),
-        None if legitimate_context else rule_timing_anomaly(session, agent_id, provider),
+        None if expected_volume_context else rule_timing_anomaly(session, agent_id, provider),
     ]
     fired = [h for h in heads if h is not None]
     if not fired:

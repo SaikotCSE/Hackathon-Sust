@@ -19,6 +19,7 @@ from ..models.database import (
     AnomalyEvent,
     BalanceHistory,
     DataQualityEvent,
+    OperationalContextEvent,
     ProviderBalance,
     ScenarioEvent,
     Transaction,
@@ -115,6 +116,28 @@ class SimulationEngine:
             "duration_minutes": spec.duration_minutes,
             "intent": spec.intended_severity,
         })
+        # Persist observed operational context separately from evaluation
+        # ground truth. The detector may consume this row, but never reads the
+        # ScenarioEvent label or intended severity.
+        context_kind = {
+            "salary_day": "salary_day",
+            "bkash_surge": "demand_surge",
+        }.get(spec.kind)
+        if context_kind:
+            self.session.add(OperationalContextEvent(
+                agent_id=self.agent_id,
+                provider=provider,
+                kind=context_kind,
+                note=(
+                    "Known salary-day service demand from the operations calendar"
+                    if context_kind == "salary_day"
+                    else "Known provider demand surge reported by Operations"
+                ),
+                source="simulated-operations-calendar",
+                started_at=ev.injected_at,
+                ends_at=ev.injected_at + timedelta(minutes=spec.duration_minutes),
+            ))
+            self.session.commit()
         injector(provider=provider)
         return ev
 

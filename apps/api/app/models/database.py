@@ -174,7 +174,9 @@ class Alert(SQLModel, table=True):
     owner_label: str  # human-readable
     initial_owner: str  # role that triggered ownership (liquidity / anomaly / data-quality)
     status: str = Field(default="open", index=True)  # open | assigned | ack | review | resolved | escalated | closed
-    ground_truth_severity: Optional[str] = None  # for Module 4 priority classification metric
+    # Legacy nullable column retained for additive SQLite compatibility.
+    # Predictions never populate it; evaluation truth lives in ScenarioEvent.
+    ground_truth_severity: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     acknowledged_at: Optional[datetime] = None
@@ -299,6 +301,26 @@ class DataQualityEvent(SQLModel, table=True):
     note: str = ""
     started_at: datetime = Field(default_factory=datetime.utcnow)
     resolved_at: Optional[datetime] = None
+
+
+class OperationalContextEvent(SQLModel, table=True):
+    """Observed business context available to the detector as an input feature.
+
+    This is deliberately separate from ``ScenarioEvent``. Scenario rows are
+    evaluation labels; context rows represent information an operator could
+    genuinely know in advance, such as a salary day or local campaign.
+    """
+
+    __tablename__ = "operational_context_events"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    agent_id: int = Field(foreign_key="agents.id", index=True)
+    provider: str = Field(index=True)
+    kind: str  # salary_day | demand_surge | campaign | local_event
+    note: str = ""
+    source: str = "operations-calendar"
+    started_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    ends_at: datetime = Field(index=True)
 
 
 class ScenarioEvent(SQLModel, table=True):

@@ -8,11 +8,11 @@ The scenario engine supports:
 
 | Scenario | Intended interpretation | Ground truth |
 |---|---|---|
-| bKash surge | provider liquidity pressure | critical, not an anomaly judgment |
-| repeated amounts | unusual repeated-value behavior | anomaly requiring review |
+| bKash e-money drawdown | sustained cash-in demand consumes the separate bKash position | critical, not an anomaly judgment |
+| repeated Nagad amounts | unusual repeated-value behavior | anomaly requiring review |
 | structuring | near-threshold clustered values | anomaly requiring review |
 | Rocket delay | late/incomplete provider feed | data-quality issue |
-| salary day | plausible legitimate high volume | normal / negative control |
+| Nagad salary day | plausible legitimate high volume with observed calendar context | normal / negative control |
 
 Scenario ground truth is used only for evaluation and is never read by the detector. Separately stored operational-context rows represent information that could genuinely be known in advance, such as a salary calendar or a reported demand surge. Compatible velocity/timing signals are treated as contextual rather than promoted, while repeated-value, threshold-cluster, and reconciliation rules still run. The UI and workflow never present evaluation labels as proof about a person.
 

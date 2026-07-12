@@ -41,11 +41,12 @@ The database is created and seeded at `.data/super_agent.db`. Set `SUPER_AGENT_D
 ## Demo flow
 
 1. Start as **Demo Agent** and inspect physical cash, separate provider balances, forecast evidence, and confidence.
-2. Inject **bKash surge**, then tick the simulation and open the resulting liquidity alert.
-3. Inject **Repeated amounts** or **Structuring**, tick, and inspect the record-level evidence and uncertainty.
+2. In **Synthetic scenario lab**, run **bKash e-money drawdown**. The control injects data and runs the analytical cycle automatically; open the resulting liquidity alert.
+3. Run **Repeated Nagad amounts** or **Amounts near ৳5,000**, then inspect the record-level evidence and uncertainty.
 4. Switch to **Operations**, assign/acknowledge the case, add a note, and follow the escalation path.
 5. Switch to the matching **Provider** to verify that only its provider column and authorized actions are visible.
-6. Inject **Rocket feed delay** to see reduced confidence and fallback behavior, then resolve it as Operations or Rocket.
+6. Run **Delayed Rocket feed** to see reduced confidence and fallback behavior, then resolve it as Operations or Rocket.
+7. Run **Nagad salary-day volume** as a legitimate-demand control and verify that compatible volume alone is not promoted as unusual activity.
 7. Open **Metrics** to inspect measured quality and simulation ground truth.
 
 ## Verify

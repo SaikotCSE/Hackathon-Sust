@@ -39,7 +39,8 @@ export default function MetricsPage() {
 
   if (!data) return <div>Loading…</div>;
 
-  const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
+  const num = (v: number | null, digits = 1) => v == null ? "n/a" : v.toFixed(digits);
+  const pct = (v: number | null) => v == null ? "n/a" : `${(v * 100).toFixed(1)}%`;
 
   return (
     <>
@@ -54,15 +55,15 @@ export default function MetricsPage() {
       />
       <Disclaimer />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-        <Stat label="Liquidity MAE (min)"  value={data.liquidity_mae_minutes.toFixed(1)} />
-        <Stat label="Lead time (min)"       value={data.shortage_lead_time_minutes.toFixed(1)} />
+        <Stat label="Liquidity MAE (min)"  value={num(data.liquidity_mae_minutes)} />
+        <Stat label="Lead time (min)"       value={num(data.shortage_lead_time_minutes)} />
         <Stat label="Anomaly precision"     value={pct(data.anomaly_precision)} />
         <Stat label="Anomaly recall"        value={pct(data.anomaly_recall)} />
         <Stat label="False positive rate"   value={pct(data.false_positive_rate)} />
         <Stat label="Explanation coverage"  value={pct(data.explanation_coverage)} />
-        <Stat label="API p50 (ms)"          value={data.api_latency_p50_ms.toFixed(1)} />
-        <Stat label="API p95 (ms)"          value={data.api_latency_p95_ms.toFixed(1)} />
-        <Stat label="Confidence Δ under bad data" value={data.confidence_delta_under_bad_data.toFixed(2)} />
+        <Stat label="API p50 (ms)"          value={num(data.api_latency_p50_ms)} />
+        <Stat label="API p95 (ms)"          value={num(data.api_latency_p95_ms)} />
+        <Stat label="Confidence Δ under bad data" value={num(data.confidence_delta_under_bad_data, 2)} />
         <Stat label="Priority alignment"    value={data.priority_classification_alignment == null ? "n/a" : pct(data.priority_classification_alignment)} />
         <Stat label="Total alerts"          value={String(data.alert_count)} />
         <Stat label="Total anomaly events"  value={String(data.anomaly_event_count)} />

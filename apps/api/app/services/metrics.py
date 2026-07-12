@@ -6,12 +6,10 @@ so the dashboard can render a live time series, not a single snapshot.
 """
 from __future__ import annotations
 
-import json
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from statistics import mean
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from sqlmodel import Session, select
 
@@ -21,21 +19,20 @@ from ..models.database import (
     ForecastSnapshot,
     MetricTick,
     ScenarioEvent,
-    Transaction,
 )
 
 
 @dataclass
 class MetricsSnapshot:
-    liquidity_mae_minutes: float
-    shortage_lead_time_minutes: float
-    anomaly_precision: float
-    anomaly_recall: float
-    false_positive_rate: float
-    explanation_coverage: float
-    api_latency_p50_ms: float
-    api_latency_p95_ms: float
-    confidence_delta_under_bad_data: float
+    liquidity_mae_minutes: Optional[float]
+    shortage_lead_time_minutes: Optional[float]
+    anomaly_precision: Optional[float]
+    anomaly_recall: Optional[float]
+    false_positive_rate: Optional[float]
+    explanation_coverage: Optional[float]
+    api_latency_p50_ms: Optional[float]
+    api_latency_p95_ms: Optional[float]
+    confidence_delta_under_bad_data: Optional[float]
     priority_classification_alignment: Optional[float]
     alert_count: int
     anomaly_event_count: int
@@ -69,9 +66,11 @@ def _pr_metrics(scenario_events: List[ScenarioEvent], anomaly_events: List[Anoma
             if detected:
                 fp += 1
 
-    precision = tp / (tp + fp) if (tp + fp) > 0 else (1.0 if (tp + fn) == 0 else 0.0)
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 1.0
-    fpr = fp / normal_total if normal_total > 0 else 0.0
+    # Undefined metrics stay undefined. Reporting perfect precision/recall at
+    # cold start would be a confident claim without evaluated examples.
+    precision = tp / (tp + fp) if (tp + fp) > 0 else None
+    recall = tp / (tp + fn) if (tp + fn) > 0 else None
+    fpr = fp / normal_total if normal_total > 0 else None
     return precision, recall, fpr
 
 
@@ -119,8 +118,8 @@ def _liquidity_mae_and_lead(session: Session, scenarios: List[ScenarioEvent]) ->
         # Detection lead time is the wall-clock warning interval, independent
         # of whether the ETA itself was accurate.
         leads.append(actual_min)
-    mae = mean(diffs) if diffs else 0.0
-    lead = mean(leads) if leads else 0.0
+    mae = mean(diffs) if diffs else None
+    lead = mean(leads) if leads else None
     return mae, lead
 
 
@@ -128,7 +127,7 @@ def _liquidity_mae_and_lead(session: Session, scenarios: List[ScenarioEvent]) ->
 # Confidence under bad data (Module 8)
 # ---------------------------------------------------------------------------
 
-def _confidence_delta(session: Session) -> float:
+def _confidence_delta(session: Session) -> Optional[float]:
     # Cap each side at a window-bounded sample so the metric stays
     # responsive as the forecast table grows.
     window_start = datetime.utcnow() - timedelta(hours=24)
@@ -147,7 +146,7 @@ def _confidence_delta(session: Session) -> float:
         .limit(500)
     ).all()
     if not healthy or not degraded:
-        return 0.0
+        return None
     return mean(healthy) - mean(degraded)
 
 
@@ -156,23 +155,24 @@ def _confidence_delta(session: Session) -> float:
 # ---------------------------------------------------------------------------
 
 def _priority_alignment(scenarios: List[ScenarioEvent], alerts: List[Alert]) -> Optional[float]:
-    by_intent = {s.kind: s.intended_severity for s in scenarios}
     matched = 0
     total = 0
-    for kind, intent in by_intent.items():
+    for scenario in scenarios:
+        intent = scenario.intended_severity
         if intent == "normal":
             continue  # 'normal' doesn't get a label match; skip
         total += 1
-        alerts_for_kind = [a for a in alerts if a.ground_truth_severity == intent]
-        if alerts_for_kind:
-            # Did *any* alert from this scenario end up at the matching tier?
-            top = max(alerts_for_kind, key=lambda a: a.priority_score)
-            tier_match = {"normal": "normal", "low": "low", "high": "high", "critical": "critical"}.get(intent)
-            if top.severity == tier_match:
-                matched += 1
-        else:
-            # No alert raised — that's a miss too. Treat as 0 for the metric.
-            pass
+        duration = max(1, int(getattr(scenario, "duration_minutes", 5) or 5))
+        end = scenario.injected_at + timedelta(minutes=duration + 1)
+        candidates = [
+            alert
+            for alert in alerts
+            if alert.agent_id == scenario.agent_id
+            and alert.provider == scenario.provider
+            and scenario.injected_at <= alert.updated_at <= end
+        ]
+        if candidates and max(candidates, key=lambda a: a.priority_score).severity == intent:
+            matched += 1
     if total == 0:
         return None
     return matched / total
@@ -211,11 +211,7 @@ def compute_metrics(session: Session) -> MetricsSnapshot:
     latency_rows = session.exec(select(MetricTick).where(MetricTick.name == "api_latency_ms").order_by(MetricTick.ts.desc()).limit(200)).all()
     latencies = [r.value for r in latency_rows]
 
-    if not anomaly_events and not scenarios:
-        # Touch the engine so we have something to report even at cold start
-        fallback_precision, fallback_recall, fallback_fpr = 1.0, 1.0, 0.0
-    else:
-        fallback_precision, fallback_recall, fallback_fpr = _pr_metrics(scenarios, anomaly_events)
+    precision, recall, fpr = _pr_metrics(scenarios, anomaly_events)
 
     mae, lead = _liquidity_mae_and_lead(session, scenarios)
     conf_delta = _confidence_delta(session)
@@ -231,21 +227,21 @@ def compute_metrics(session: Session) -> MetricsSnapshot:
         )
         coverage = covered / len(alerts)
     else:
-        coverage = 1.0
+        coverage = None
 
     p50 = _percentile(latencies, 50)
     p95 = _percentile(latencies, 95)
 
     snap = MetricsSnapshot(
-        liquidity_mae_minutes=float(mae),
-        shortage_lead_time_minutes=float(lead),
-        anomaly_precision=float(fallback_precision),
-        anomaly_recall=float(fallback_recall),
-        false_positive_rate=float(fallback_fpr),
-        explanation_coverage=float(coverage),
-        api_latency_p50_ms=float(p50),
-        api_latency_p95_ms=float(p95),
-        confidence_delta_under_bad_data=float(conf_delta),
+        liquidity_mae_minutes=None if mae is None else float(mae),
+        shortage_lead_time_minutes=None if lead is None else float(lead),
+        anomaly_precision=None if precision is None else float(precision),
+        anomaly_recall=None if recall is None else float(recall),
+        false_positive_rate=None if fpr is None else float(fpr),
+        explanation_coverage=None if coverage is None else float(coverage),
+        api_latency_p50_ms=None if p50 is None else float(p50),
+        api_latency_p95_ms=None if p95 is None else float(p95),
+        confidence_delta_under_bad_data=None if conf_delta is None else float(conf_delta),
         priority_classification_alignment=priority_align if priority_align is None else float(priority_align),
         alert_count=len(alerts),
         anomaly_event_count=len(anomaly_events),
@@ -261,14 +257,15 @@ def compute_metrics(session: Session) -> MetricsSnapshot:
         ("false_positive_rate", snap.false_positive_rate),
         ("explanation_coverage", snap.explanation_coverage),
     ):
-        session.add(MetricTick(name=name, value=val))
+        if val is not None:
+            session.add(MetricTick(name=name, value=val))
     session.commit()
     return snap
 
 
-def _percentile(values: List[float], pct: float) -> float:
+def _percentile(values: List[float], pct: float) -> Optional[float]:
     if not values:
-        return 0.0
+        return None
     s = sorted(values)
     idx = int(round((pct / 100.0) * (len(s) - 1)))
     return float(s[max(0, min(idx, len(s) - 1))])
